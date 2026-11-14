@@ -290,8 +290,24 @@ class ServicioTrampas:
         return [e.UbicacionTrampa(**fila) for fila in filas]
 
     async def reubicar(self, actor: Actor, tram_id: int, s: e.NuevaUbicacion) -> e.UbicacionTrampa:
-        """Sin solape (EXCLUDE ubicacion_trampa_sin_solape). Invalida el paquete de campo."""
-        raise NoImplementado("Reubicar trampa")
+        """Mueve la trampa a otro punto o lote: cierra la ubicación vigente con ``ubic_fecha_fin``
+        y registra la nueva. La BD hace cumplir vigencia y solape (EXCLUDE).
+
+        Invalida el paquete de campo (pendiente: no se llama a ``invalidar_paquetes``).
+        """
+        trampa = await self._repo.trampa_por_id(actor.usua_id, tram_id)
+        if trampa is None:
+            raise NoEncontrado(
+                "La trampa no existe o no es visible para usted.", codigo="TRAMPA_NO_ENCONTRADA"
+            )
+        pred_id = await self._predio_destino(actor, s)
+        await self._exigir_distancia_minima(pred_id, s, excluir_tram_id=tram_id)
+        ubic_id = await self._repo.reubicar(tram_id, {**s.model_dump(), "pred_id": pred_id})
+        filas = await self._repo.ubicaciones(tram_id, actor.usua_id)
+        for fila in filas:
+            if fila["ubic_id"] == ubic_id:
+                return e.UbicacionTrampa(**fila)
+        raise NoEncontrado("La trampa no existe o no es visible para usted.", codigo="TRAMPA_NO_ENCONTRADA")
 
 
 class ServicioPrograma:

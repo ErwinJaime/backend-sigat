@@ -452,7 +452,45 @@ SELECT ubic_id, tram_id, pred_id, lote_id, ubic_fecha, ubic_fecha_fin, tecn_id, 
 
     async def reubicar(self, tram_id: int, nueva: dict[str, Any]) -> int:
         """Cierra la vigente (ubic_fecha_fin = nueva.ubic_fecha) e inserta la nueva."""
-        raise NoImplementado("Reubicación")
+        async with self._con.begin_nested():
+            ubic_vigente = await self._con.scalar(
+                text(
+                    """
+SELECT ubic_id
+  FROM sigat.ubicacion_trampa
+ WHERE tram_id = :tram_id AND ubic_fecha_fin IS NULL
+   FOR UPDATE
+"""
+                ),
+                {"tram_id": tram_id},
+            )
+            if ubic_vigente is not None:
+                await self._con.execute(
+                    text(
+                        """
+UPDATE sigat.ubicacion_trampa
+   SET ubic_fecha_fin = :ubic_fecha
+ WHERE ubic_id = :ubic_vigente
+"""
+                    ),
+                    {"ubic_fecha": nueva["ubic_fecha"], "ubic_vigente": ubic_vigente},
+                )
+            ubic_id = await self._con.scalar(
+                text(
+                    """
+INSERT INTO sigat.ubicacion_trampa (tram_id, pred_id, lote_id, ubic_fecha, tecn_id, vigi_id, ruta_id,
+                                    retc_id, loca_id, arbo_id, ubic_long, ubic_lat, ubic_alt,
+                                    ubic_referencia)
+VALUES (:tram_id, :pred_id, :lote_id, :ubic_fecha, :tecn_id, :vigi_id, :ruta_id,
+        :retc_id, :loca_id, :arbo_id, :ubic_long, :ubic_lat, :ubic_alt, :ubic_referencia)
+RETURNING ubic_id
+"""
+                ),
+                {**nueva, "tram_id": tram_id},
+            )
+            if ubic_id is None:
+                raise RuntimeError("No se pudo insertar la nueva ubicación")
+        return int(ubic_id)
 
     # programa / retícula / paquete
     async def programa_vigente(self, pred_id: int, fecha: date) -> dict[str, Any] | None:

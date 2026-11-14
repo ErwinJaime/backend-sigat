@@ -88,6 +88,19 @@ def nueva_trampa(**cambios: Any) -> e.NuevaTrampa:
     return e.NuevaTrampa(**datos)
 
 
+def nueva_ubicacion(**cambios: Any) -> e.NuevaUbicacion:
+    datos: dict[str, Any] = {
+        "lote_id": 2,
+        "ubic_fecha": date(2026, 11, 21),
+        "vigi_id": 1,
+        "tecn_id": 1,
+        "ubic_long": Decimal("-73.35820"),
+        "ubic_lat": Decimal("5.53090"),
+    }
+    datos.update(cambios)
+    return e.NuevaUbicacion(**datos)
+
+
 class RepoFalso:
     """Respuestas de ``RepositorioConfiguracion``; cada prueba ajusta las que necesita."""
 
@@ -108,6 +121,7 @@ class RepoFalso:
         self.consultas_cercania: list[tuple[Any, ...]] = []
         self.actualizadas: list[tuple[int, dict[str, Any]]] = []
         self.historial: list[dict[str, Any]] = [deepcopy(UBICACION_VIGENTE), deepcopy(UBICACION_ANTERIOR)]
+        self.reubicadas: list[tuple[int, dict[str, Any]]] = []
 
     async def lote_visible(self, usua_id: int, lote_id: int) -> bool:
         return self.visible
@@ -152,6 +166,31 @@ class RepoFalso:
     async def ubicaciones(self, tram_id: int, usua_id: int) -> list[dict[str, Any]]:
         """El repositorio real ya filtra por ``fn_lotes_visibles``: no visible = sin filas."""
         return self.historial if self.visible else []
+
+    async def reubicar(self, tram_id: int, nueva: dict[str, Any]) -> int:
+        self.reubicadas.append((tram_id, nueva))
+        nueva_fila = {
+            "ubic_id": 5,
+            "tram_id": tram_id,
+            "pred_id": nueva["pred_id"],
+            "lote_id": nueva["lote_id"],
+            "ubic_fecha": nueva["ubic_fecha"],
+            "ubic_fecha_fin": None,
+            "tecn_id": nueva["tecn_id"],
+            "vigi_id": nueva["vigi_id"],
+            "ruta_id": nueva.get("ruta_id"),
+            "retc_id": nueva.get("retc_id"),
+            "loca_id": nueva.get("loca_id"),
+            "arbo_id": nueva.get("arbo_id"),
+            "ubic_long": nueva["ubic_long"],
+            "ubic_lat": nueva["ubic_lat"],
+            "ubic_alt": nueva.get("ubic_alt"),
+            "ubic_referencia": nueva.get("ubic_referencia"),
+            "ubic_origen": "operacion",
+            "ubic_registrado_en": datetime(2026, 11, 21, 10, 0, tzinfo=UTC),
+        }
+        self.historial.insert(0, nueva_fila)
+        return 5
 
 
 def servicio(repo: RepoFalso) -> ServicioTrampas:
@@ -368,3 +407,85 @@ async def test_historial_conserva_la_ubicacion_anterior_cerrada() -> None:
     assert historial[0].ubic_fecha_fin is None
     assert historial[1].ubic_fecha_fin == date(2026, 11, 20)
     assert historial[1].lote_id == 1
+
+
+# ------------------------------------------------------------------ reubicar
+@pytest.mark.regla
+async def test_reubicar_trampa_no_visible_da_404_sin_escribir() -> None:
+    repo = RepoFalso()
+    repo.trampa = None
+
+    with pytest.raises(NoEncontrado) as error:
+        await servicio(repo).reubicar(AGRONOMO, 99, nueva_ubicacion())
+
+    assert error.value.codigo == "TRAMPA_NO_ENCONTRADA"
+    assert repo.reubicadas == []
+
+
+@pytest.mark.regla
+async def test_reubicar_en_lote_no_visible_da_404() -> None:
+    repo = RepoFalso()
+    repo.visible = False
+
+    with pytest.raises(NoEncontrado) as error:
+        await servicio(repo).reubicar(AGRONOMO, 7, nueva_ubicacion())
+
+    assert error.value.codigo == "LOTE_NO_ENCONTRADO"
+    assert repo.reubicadas == []
+
+
+@pytest.mark.regla
+async def test_reubicar_en_lote_inactivo_da_422() -> None:
+    repo = RepoFalso()
+    repo.lote_activo = False
+
+    with pytest.raises(ReglaNegocio) as error:
+        await servicio(repo).reubicar(AGRONOMO, 7, nueva_ubicacion())
+
+    assert error.value.codigo == "LOTE_INACTIVO"
+    assert repo.reubicadas == []
+
+
+@pytest.mark.regla
+async def test_reubicar_cerca_de_otra_trampa_da_422_y_excluye_la_propia() -> None:
+    repo = RepoFalso()
+    repo.cercanas = ["15001-602-003"]
+
+    with pytest.raises(ReglaNegocio) as error:
+        await servicio(repo).reubicar(AGRONOMO, 7, nueva_ubicacion())
+
+    assert error.value.codigo == "DISTANCIA_MINIMA_TRAMPAS"
+    assert "15001-602-003" in error.value.detalle
+    assert repo.consultas_cercania[0][5] == 7
+    assert repo.reubicadas == []
+
+
+@pytest.mark.regla
+async def test_reubicar_valido_devuelve_nueva_ubicacion_y_guarda_pred_id() -> None:
+    repo = RepoFalso()
+
+    res = await servicio(repo).reubicar(AGRONOMO, 7, nueva_ubicacion())
+
+    assert res.ubic_id == 5
+    assert res.tram_id == 7
+    assert res.lote_id == 2
+    assert res.pred_id == 1
+    assert res.ubic_fecha == date(2026, 11, 21)
+    assert res.ubic_fecha_fin is None
+    assert len(repo.reubicadas) == 1
+    tram_id_recibido, datos_recibidos = repo.reubicadas[0]
+    assert tram_id_recibido == 7
+    assert datos_recibidos["pred_id"] == 1
+    assert datos_recibidos["lote_id"] == 2
+
+
+@pytest.mark.regla
+async def test_reubicar_sin_programa_vigente_no_exige_distancia() -> None:
+    repo = RepoFalso()
+    repo.distancia = None
+
+    res = await servicio(repo).reubicar(AGRONOMO, 7, nueva_ubicacion())
+
+    assert res.ubic_id == 5
+    assert repo.consultas_cercania == []
+    assert len(repo.reubicadas) == 1

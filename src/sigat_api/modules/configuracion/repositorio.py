@@ -3,6 +3,7 @@ fn_lote_app(usua), fn_trampa_app(usua), fn_lote_que_contiene(punto, instante).""
 
 import json
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -252,19 +253,262 @@ SELECT t.tram_id,
         )
         return int(valor) if valor is not None else None
 
+    async def tipo_trampa(self, tipt_id: int) -> dict[str, Any] | None:
+        """Tipo de trampa con la paridad que exige al número (RN-005). None si no existe."""
+        fila = (
+            (
+                await self._con.execute(
+                    text(
+                        "SELECT tipt_id, tipt_descripcion, tipt_paridad FROM sigat.tipo_trampa"
+                        " WHERE tipt_id = :tipt_id"
+                    ),
+                    {"tipt_id": tipt_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+        return dict(fila) if fila is not None else None
+
+    async def existe_codigo_trampa(self, tram_codigo: str) -> bool:
+        """El código ICA es único en todo el catálogo (``trampa_tram_codigo_key``)."""
+        return bool(
+            await self._con.scalar(
+                text("SELECT EXISTS (SELECT 1 FROM sigat.trampa WHERE tram_codigo = :codigo)"),
+                {"codigo": tram_codigo},
+            )
+        )
+
+    async def predio_del_lote(self, lote_id: int) -> int | None:
+        """``ubicacion_trampa.pred_id`` sale del lote (FK compuesta lote_id, pred_id)."""
+        valor = await self._con.scalar(
+            text("SELECT pred_id FROM sigat.lote WHERE lote_id = :lote_id"), {"lote_id": lote_id}
+        )
+        return int(valor) if valor is not None else None
+
+    async def lote_activo_en(self, lote_id: int, fecha: date) -> bool:
+        """El lote está activo entre ``lote_fecha_registro`` (inclusive) y ``lote_fecha_baja``
+        (primer día inactivo, exclusivo), según la definición de la tabla ``lote``."""
+        return bool(
+            await self._con.scalar(
+                text(
+                    """
+SELECT EXISTS (
+       SELECT 1 FROM sigat.lote
+        WHERE lote_id = :lote_id
+          AND lote_fecha_registro <= :fecha
+          AND (lote_fecha_baja IS NULL OR lote_fecha_baja > :fecha))
+"""
+                ),
+                {"lote_id": lote_id, "fecha": fecha},
+            )
+        )
+
+    async def distancia_minima_trampas(self, pred_id: int, fecha: date) -> int | None:
+        """RN-004: ``prog_distancia_min_trampas_m`` del programa vigente en ``fecha``.
+
+        Vigencia [desde, hasta). None si el predio no tiene programa vigente en esa fecha.
+        """
+        valor = await self._con.scalar(
+            text(
+                """
+SELECT prog_distancia_min_trampas_m
+  FROM sigat.programa_inspeccion
+ WHERE pred_id = :pred_id
+   AND prog_vigente_desde <= :fecha
+   AND (prog_vigente_hasta IS NULL OR prog_vigente_hasta > :fecha)
+"""
+            ),
+            {"pred_id": pred_id, "fecha": fecha},
+        )
+        return int(valor) if valor is not None else None
+
+    async def trampas_cercanas(
+        self,
+        pred_id: int,
+        lon: Decimal,
+        lat: Decimal,
+        fecha: date,
+        distancia_m: int,
+        excluir_tram_id: int | None = None,
+    ) -> list[str]:
+        """Códigos de las trampas del predio a menos de ``distancia_m`` del punto (RN-004).
+
+        La BD no hace cumplir esta regla para trampas (solo para la retícula), por eso se consulta
+        aquí. Cuenta las ubicaciones que siguen vigentes desde ``fecha``. La distancia se mide en
+        metros sobre ``geography``. ``excluir_tram_id`` deja fuera a la propia trampa al reubicarla.
+        """
+        filas = await self._con.execute(
+            text(
+                """
+SELECT t.tram_codigo
+  FROM sigat.ubicacion_trampa u
+  JOIN sigat.trampa t ON t.tram_id = u.tram_id
+ WHERE u.pred_id = :pred_id
+   AND (u.ubic_fecha_fin IS NULL OR u.ubic_fecha_fin > :fecha)
+   AND (CAST(:excluir AS integer) IS NULL OR u.tram_id <> CAST(:excluir AS integer))
+   AND ST_Distance(
+         CAST(u.ubic_geom AS geography),
+         CAST(ST_SetSRID(ST_MakePoint(CAST(:lon AS float8), CAST(:lat AS float8)), 4326) AS geography)
+       ) < :distancia
+ ORDER BY t.tram_codigo
+"""
+            ),
+            {
+                "pred_id": pred_id,
+                "fecha": fecha,
+                "excluir": excluir_tram_id,
+                "lon": float(lon),
+                "lat": float(lat),
+                "distancia": distancia_m,
+            },
+        )
+        return [str(f) for f in filas.scalars()]
+
     async def insertar_trampa(self, datos: dict[str, Any], ubicacion: dict[str, Any]) -> int:
-        """trampa + ubicacion_trampa en una transacción (fn_trampa_valida, fn_ubicacion_trampa_valida)."""
-        raise NoImplementado("Alta de trampa")
+        """trampa + ubicacion_trampa en una transacción (fn_trampa_valida, fn_ubicacion_trampa_valida).
+
+        El SAVEPOINT garantiza que no quede una trampa sin ubicación si la BD rechaza la segunda
+        fila. La trampa nace en estado ``activo`` con la fecha de hoy en la zona del predio (ADR-10).
+        """
+        async with self._con.begin_nested():
+            tram_id = await self._con.scalar(
+                text(
+                    """
+INSERT INTO sigat.trampa (tram_codigo, tipt_id, atra_id, esta_id, tram_fecha_registro,
+                          tram_tecnico_registro_id)
+SELECT :tram_codigo, :tipt_id, :atra_id, e.esta_id,
+       CAST(now() AT TIME ZONE p.pred_zona_horaria AS date), :tram_tecnico_registro_id
+  FROM sigat.estado_registro e
+  JOIN sigat.predio p ON p.pred_id = :pred_id
+ WHERE e.esta_descripcion = 'activo'
+RETURNING tram_id
+"""
+                ),
+                {**datos, "pred_id": ubicacion["pred_id"]},
+            )
+            if tram_id is None:
+                raise RuntimeError("Falta el estado 'activo' en estado_registro o el predio no existe")
+            await self._con.execute(
+                text(
+                    """
+INSERT INTO sigat.ubicacion_trampa (tram_id, pred_id, lote_id, ubic_fecha, tecn_id, vigi_id, ruta_id,
+                                    retc_id, loca_id, arbo_id, ubic_long, ubic_lat, ubic_alt,
+                                    ubic_referencia)
+VALUES (:tram_id, :pred_id, :lote_id, :ubic_fecha, :tecn_id, :vigi_id, :ruta_id,
+        :retc_id, :loca_id, :arbo_id, :ubic_long, :ubic_lat, :ubic_alt, :ubic_referencia)
+"""
+                ),
+                {**ubicacion, "tram_id": tram_id},
+            )
+        return int(tram_id)
 
     async def actualizar_trampa(self, tram_id: int, cambios: dict[str, Any]) -> None:
-        raise NoImplementado("Actualizar trampa")
+        """Aplica solo los campos presentes en ``cambios`` (atra_id, esta_id, tecn_id_estado).
 
-    async def ubicaciones(self, tram_id: int) -> list[dict[str, Any]]:
-        raise NoImplementado("Historial de ubicaciones")
+        Un cambio de estado fija ``tram_fecha_estado`` y ``tram_tecnico_estado_id``. Siempre se
+        actualiza ``tram_fecha_actualizacion`` con la fecha de hoy en la zona del predio (ADR-10).
+        ``tram_tecnico_actualizacion_id`` es el técnico de ESTA actualización: ``tecn_id_estado`` o
+        nulo si no vino (por ejemplo, solo cambió el atrayente); no se arrastra el anterior.
+        """
+        await self._con.execute(
+            text(
+                """
+UPDATE sigat.trampa t
+   SET atra_id = CASE WHEN CAST(:cambia_atrayente AS boolean)
+                      THEN CAST(:atra_id AS integer) ELSE t.atra_id END,
+       esta_id = CASE WHEN CAST(:cambia_estado AS boolean)
+                      THEN CAST(:esta_id AS integer) ELSE t.esta_id END,
+       tram_fecha_estado = CASE WHEN CAST(:cambia_estado AS boolean)
+                                THEN h.hoy ELSE t.tram_fecha_estado END,
+       tram_tecnico_estado_id = CASE WHEN CAST(:cambia_estado AS boolean)
+                                     THEN CAST(:tecnico AS integer) ELSE t.tram_tecnico_estado_id END,
+       tram_tecnico_actualizacion_id = CAST(:tecnico AS integer),
+       tram_fecha_actualizacion = h.hoy
+  FROM (SELECT COALESCE(
+                 (SELECT CAST(now() AT TIME ZONE p.pred_zona_horaria AS date)
+                    FROM sigat.ubicacion_trampa u
+                    JOIN sigat.predio p ON p.pred_id = u.pred_id
+                   WHERE u.tram_id = :tram_id AND u.ubic_fecha_fin IS NULL),
+                 CURRENT_DATE) AS hoy) h
+ WHERE t.tram_id = :tram_id
+"""
+            ),
+            {
+                "tram_id": tram_id,
+                "cambia_atrayente": "atra_id" in cambios,
+                "atra_id": cambios.get("atra_id"),
+                "cambia_estado": "esta_id" in cambios,
+                "esta_id": cambios.get("esta_id"),
+                "tecnico": cambios.get("tecn_id_estado"),
+            },
+        )
+
+    async def ubicaciones(self, tram_id: int, usua_id: int) -> list[dict[str, Any]]:
+        """Historial de ``ubicacion_trampa``, la más reciente primero.
+
+        Solo las ubicaciones en lotes de ``fn_lotes_visibles``: si la trampa estuvo antes en un
+        predio ajeno, esa parte no se muestra (toda consulta de lotes se restringe por asignación).
+        Las filas heredadas sin lote (``ubic_origen = 'legado'``) tampoco: el contrato
+        ``UbicacionTrampa`` exige ``lote_id``.
+        """
+        filas = await self._con.execute(
+            text(
+                """
+SELECT ubic_id, tram_id, pred_id, lote_id, ubic_fecha, ubic_fecha_fin, tecn_id, vigi_id, ruta_id,
+       retc_id, loca_id, arbo_id, ubic_long, ubic_lat, ubic_alt, ubic_referencia, ubic_origen,
+       ubic_registrado_en
+  FROM sigat.ubicacion_trampa
+ WHERE tram_id = :tram_id
+   AND lote_id IN (SELECT lote_id FROM sigat.fn_lotes_visibles(:usua))
+ ORDER BY ubic_fecha DESC, ubic_id DESC
+"""
+            ),
+            {"tram_id": tram_id, "usua": usua_id},
+        )
+        return [dict(f) for f in filas.mappings()]
 
     async def reubicar(self, tram_id: int, nueva: dict[str, Any]) -> int:
         """Cierra la vigente (ubic_fecha_fin = nueva.ubic_fecha) e inserta la nueva."""
-        raise NoImplementado("Reubicación")
+        async with self._con.begin_nested():
+            ubic_vigente = await self._con.scalar(
+                text(
+                    """
+SELECT ubic_id
+  FROM sigat.ubicacion_trampa
+ WHERE tram_id = :tram_id AND ubic_fecha_fin IS NULL
+   FOR UPDATE
+"""
+                ),
+                {"tram_id": tram_id},
+            )
+            if ubic_vigente is not None:
+                await self._con.execute(
+                    text(
+                        """
+UPDATE sigat.ubicacion_trampa
+   SET ubic_fecha_fin = :ubic_fecha
+ WHERE ubic_id = :ubic_vigente
+"""
+                    ),
+                    {"ubic_fecha": nueva["ubic_fecha"], "ubic_vigente": ubic_vigente},
+                )
+            ubic_id = await self._con.scalar(
+                text(
+                    """
+INSERT INTO sigat.ubicacion_trampa (tram_id, pred_id, lote_id, ubic_fecha, tecn_id, vigi_id, ruta_id,
+                                    retc_id, loca_id, arbo_id, ubic_long, ubic_lat, ubic_alt,
+                                    ubic_referencia)
+VALUES (:tram_id, :pred_id, :lote_id, :ubic_fecha, :tecn_id, :vigi_id, :ruta_id,
+        :retc_id, :loca_id, :arbo_id, :ubic_long, :ubic_lat, :ubic_alt, :ubic_referencia)
+RETURNING ubic_id
+"""
+                ),
+                {**nueva, "tram_id": tram_id},
+            )
+            if ubic_id is None:
+                raise RuntimeError("No se pudo insertar la nueva ubicación")
+        return int(ubic_id)
 
     # programa / retícula / paquete
     async def programa_vigente(self, pred_id: int, fecha: date) -> dict[str, Any] | None:

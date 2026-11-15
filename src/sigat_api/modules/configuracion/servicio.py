@@ -3,6 +3,7 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sigat_api.compartido.errores import Conflicto, NoEncontrado, NoImplementado, ReglaNegocio
 from sigat_api.compartido.tipos import Actor
@@ -10,6 +11,8 @@ from sigat_api.infra.cola.cola import Cola
 from sigat_api.modules.configuracion import esquemas as e
 from sigat_api.modules.configuracion.dominio import error_codigo_trampa
 from sigat_api.modules.configuracion.repositorio import RepositorioConfiguracion
+
+_TZ_COLOMBIA = ZoneInfo("America/Bogota")
 
 # Columnas auxiliares que trae la vista para saber por qué no se puede confirmar la posición.
 # No forman parte del contrato HTTP: se quitan antes de construir el esquema de trampa.
@@ -51,13 +54,17 @@ class ServicioLotes:
         self._cola = cola
 
     async def listar(self, actor: Actor, pred_id: int | None, incluir_indicadores: bool) -> list[e.Lote]:
-        """Técnico: solo los lotes de sus actividades vigentes (v_asignacion_lote_tecnico) — lo
-        resuelve fn_lotes_visibles. El estado de jornada (pendiente/en curso/visitado) NO viene del
-        servidor: lo deriva el móvil de su visita local (CONCORDANCIA §4.1).
+        """Lotes visibles para el actor. La visibilidad y la asignación las resuelve
+        ``fn_lotes_visibles`` (a través de ``fn_lote_app``): administrador todos; productor y
+        agrónomo/supervisor los de sus predios (``v_acceso_predio``); técnico los de sus
+        asignaciones vigentes. ``pred_id`` solo acota el resultado. Los lotes dados de baja no
+        aparecen (``v_lote_app``).
 
         ``incluir_indicadores`` es de la web (tarjetas del panel de administración). Los indicadores
-        se calculan con las visitas, el programa y los periodos de trampeo, que son de otro sprint;
-        mientras tanto el bloque va en ``null`` (lo admite el esquema) en vez de inventar cifras.
+        se calculan con las visitas, el programa y los periodos de trampeo, que son de otro sprint
+        (fuera del alcance del issue #6); mientras tanto el bloque va en ``null`` (lo admite el
+        esquema) en vez de inventar cifras. PENDIENTE DE REVISIÓN: no existe vista ni función en la
+        BD que calcule los campos obligatorios de ``IndicadoresLote``.
         """
         filas = await self._repo.lotes_visibles(actor.usua_id, pred_id)
         return [e.Lote(**fila) for fila in filas]
@@ -77,10 +84,56 @@ class ServicioLotes:
         raise NoImplementado("Alta de lote")
 
     async def actualizar(self, actor: Actor, lote_id: int, s: e.ActualizacionLote) -> e.LoteDetalle:
-        """Web ``updateLot``: el 'propietario' no se edita aquí (es el productor del predio)."""
-        raise NoImplementado("Actualizar lote")
+        """Actualiza solo los campos permitidos. El productor no se edita aquí (sale del predio).
+
+        La autoría queda en ``bitacora_auditoria`` (``trg_aud_lote`` + ``sigat.usuario_actual``).
+        ``lote_tecnico_actualizacion_id`` NO se llena: es FK a ``tecnico`` y los roles que editan
+        lotes (administrador, agrónomo/supervisor) no tienen fila ahí.
+        """
+        if not await self._repo.lote_visible(actor.usua_id, lote_id):
+            raise NoEncontrado("El lote no existe o no es visible para usted.", codigo="LOTE_NO_ENCONTRADO")
+        cambios = s.model_dump(exclude_unset=True)
+        if not cambios:
+            raise ReglaNegocio("Debe enviar al menos un campo para actualizar.", codigo="ACTUALIZACION_VACIA")
+
+        # Columnas NOT NULL: un null explícito no es "no cambiar", es un error.
+        for campo in ("lote_descripcion", "lote_area"):
+            if campo in cambios and cambios[campo] is None:
+                raise ReglaNegocio(f"{campo} no puede ser nulo.", codigo="CAMPO_OBLIGATORIO")
+
+        # Coherencia especie/variedad antes de llegar a la FK compuesta.
+        actual = None
+        if "lote_fecha_baja" in cambios or ("espc_id" in cambios) != ("vari_id" in cambios):
+            actual = await self._repo.lote(lote_id)  # v_lote_app; None si no existe o ya está de baja
+            if actual is None:
+                raise NoEncontrado(
+                    "El lote no existe o no es visible para usted.", codigo="LOTE_NO_ENCONTRADO"
+                )
+            espc = cambios.get("espc_id", actual["espc_id"])
+            vari = cambios.get("vari_id", actual["vari_id"])
+            if vari is not None and espc is None:
+                raise ReglaNegocio("No se puede asignar variedad sin especie.", codigo="VARIEDAD_SIN_ESPECIE")
+            if "espc_id" in cambios and espc != actual["espc_id"] and actual["vari_id"] is not None:
+                raise ReglaNegocio(
+                    "Al cambiar la especie debe enviar también vari_id (o null para limpiarla).",
+                    codigo="VARIEDAD_INCOHERENTE",
+                )
+
+        cambios["lote_fecha_actualizacion"] = datetime.now(_TZ_COLOMBIA).date()
+
+        await self._repo.actualizar_lote(lote_id, cambios)
+
+        fila = await self._repo.lote(lote_id)
+        if fila is None and actual is not None:
+            # Este PATCH dio de baja el lote: v_lote_app ya lo oculta. Se responde con la fila
+            # previa más los campos que acaban de cambiar.
+            fila = {**actual, **{k: v for k, v in cambios.items() if k in actual}}
+        if fila is None:
+            raise NoEncontrado("El lote no existe o no es visible para usted.", codigo="LOTE_NO_ENCONTRADO")
+        return e.LoteDetalle(**fila)
 
     async def geometrias(self, actor: Actor, lote_id: int) -> list[e.VersionGeometriaLote]:
+        """Versiones de la geometría del lote (ADR-06)."""
         raise NoImplementado("Versiones de geometría")
 
     async def nueva_geometria(

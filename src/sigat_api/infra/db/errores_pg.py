@@ -48,6 +48,12 @@ _RESTRICCIONES: dict[str, tuple[type[ErrorDominio], str, str]] = {
         "DUPLICADO",
         "Ya existe un centro de acopio con ese nombre.",
     ),
+    # P-04 (bd/sql/16_regla_cosecha_abierta.sql): lo lanza trg_cosecha_una_abierta con SQLSTATE 23505.
+    "cosecha_una_abierta_por_lote": (
+        Conflicto,
+        "COSECHA_ABIERTA_EXISTENTE",
+        "El lote ya tiene una cosecha abierta: ciérrela o anúlela antes de registrar otra.",
+    ),
 }
 
 # Disparadores cuyo mensaje ya está escrito para personas (se muestra tal cual).

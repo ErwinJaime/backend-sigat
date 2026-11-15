@@ -178,6 +178,19 @@ Ejecuta `bd/sql/15_semilla_permisos.sql`, también incluido en `00_instalar_todo
 - La auditoría `trg_aud_rol_permiso` registra cada par en `bitacora_auditoria` sin usuario, porque no hay actor durante una migración.
 - `downgrade` no borra filas: la matriz no se distingue con seguridad de una carga institucional idéntica.
 
+### Revisión `0007` — Regla P-04: una sola cosecha abierta por lote
+
+Ejecuta `bd/sql/16_regla_cosecha_abierta.sql`, también incluido en `00_instalar_todo.sql`. **Solo agrega** la función `sigat.fn_cosecha_una_abierta()` y el disparador `BEFORE INSERT` `trg_cosecha_una_abierta` sobre `sigat.cosecha`; no crea ni modifica tablas, columnas, restricciones, índices ni datos. Desde esta revisión la regla P-04 (decisión del responsable del proyecto, 2026-11-05), que la 0004 solo hacía visible en `v_cosecha_lote_vigente.cosechas_abiertas`, se impone en la base de datos.
+
+- Una cosecha está **abierta** cuando su versión vigente (la de mayor `cose_version`) no tiene `cose_fecha_real` y no está anulada, igual que en `v_cosecha_lote_vigente`.
+- Se rechaza solo la versión que **abre** una cosecha en un lote que ya tiene otra abierta: un alta nueva abierta, la reapertura de una cerrada o anulada, o una corrección que la cambia de lote.
+- Siempre se permite corregir la cosecha que ya está abierta (versión n+1 en el mismo lote), cerrarla y anularla. El versionamiento append-only (`trg_cosecha_ro`, `trg_cosecha_version`) no cambia.
+- No se usa un índice único parcial (el `ux_cosecha_abierta` del cronograma): cada corrección es una fila nueva, y el índice vería las versiones de la misma cosecha como dos abiertas e impediría corregirla.
+- Concurrencia: `pg_advisory_xact_lock` por lote serializa dos aperturas simultáneas en el mismo lote. Con el aislamiento READ COMMITTED del backend, la segunda transacción ve la primera ya confirmada y se rechaza.
+- Error: SQLSTATE `23505` con restricción `cosecha_una_abierta_por_lote`. `infra/db/errores_pg.py` lo traduce a **409 `COSECHA_ABIERTA_EXISTENTE`**.
+- **Datos históricos:** no se revisan, modifican ni borran. Si algún lote ya tiene más de una cosecha abierta, la migración emite un `WARNING` con los lotes y continúa; esas cosechas se pueden corregir, cerrar o anular, pero no se puede abrir otra hasta que quede una sola.
+- `downgrade` elimina solo el disparador y la función.
+
 ### Consideraciones de revisión
 
 Las modificaciones de restricciones de `operacion_sync` en los ajustes v8 y v9 amplían los valores permitidos para incorporar nuevas entidades sincronizables. Como utilizan `DROP CONSTRAINT` seguido de `ADD CONSTRAINT`, deben contar con revisión técnica y aprobación del responsable de la base de datos antes de integrarse.

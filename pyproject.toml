@@ -2,7 +2,6 @@
 name = "sigat-durazno-api"
 version = "0.1.0"
 description = "Backend único (monolito modular) para la web SIGAT y la app móvil de vigilancia del durazno. Base de datos SIGAT v8 (PostgreSQL + PostGIS)."
-readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Propietario" }
 dependencies = [

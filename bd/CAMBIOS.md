@@ -191,6 +191,18 @@ Ejecuta `bd/sql/16_regla_cosecha_abierta.sql`, también incluido en `00_instalar
 - **Datos históricos:** no se revisan, modifican ni borran. Si algún lote ya tiene más de una cosecha abierta, la migración emite un `WARNING` con los lotes y continúa; esas cosechas se pueden corregir, cerrar o anular, pero no se puede abrir otra hasta que quede una sola.
 - `downgrade` elimina solo el disparador y la función.
 
+### Revisión `0008` — Vistas de informe local y guarda geométrica
+
+Ejecuta `bd/sql/17_vistas_informe_local.sql`, también incluido en `00_instalar_todo.sql`. **Solo agrega** cuatro vistas de informe y reemplaza la función del disparador `sigat.fn_lote_geometria_valida`; no crea ni modifica tablas, columnas, restricciones, índices ni datos. Es idempotente (`CREATE OR REPLACE`).
+
+- `v_ultima_sincronizacion` (P01, P06, P07): última recepción y número de operaciones consolidadas por usuario y dispositivo (`dispositivo` × `operacion_sync`).
+- `v_operacion_confirmada` (P07b, P07c, P07d): resultado del servidor por operación del cliente y número de reenvíos (`recepcion_sync`, el más reciente por `rece_t`). Cierra el ciclo del móvil.
+- `v_mtd_por_lote_escenario` (P02, P02-P): serie del MTD por lote y escenario con umbral aplicado y contraste (`periodo_trampeo` × `v_mtd_vigente` × `escenario_trampeo` × `programa_umbral`).
+- `v_resumen_productor` (P01, P01-P, PW01): predio, lotes, MTD y escenario más recientes, y estado fitosanitario por lote (`predio` × `lote` × `v_resumen_lote`, lateral sobre `v_mtd_por_lote_escenario`). Solo lotes en predios cargados y con concepto vigente.
+- `fn_lote_geometria_valida`: la regla RF-084 sigue vigente, pero la contención solo se exige cuando `lotg_geom` se inserta o cambia (`IS DISTINCT FROM` en UPDATE). Cerrar una versión (`lotg_vigente_hasta`) o editar metadatos ya no revalida un polígono cargado. El resto del cuerpo no cambia.
+- Las vistas **no** son un mecanismo de autorización: devuelven todas las filas. El backend debe consultar solo con el filtro del usuario del token.
+- `downgrade` elimina las cuatro vistas y restaura la función sin la guarda (cuerpo de `04_funciones.sql` de la revisión 0001).
+
 ### Consideraciones de revisión
 
 Las modificaciones de restricciones de `operacion_sync` en los ajustes v8 y v9 amplían los valores permitidos para incorporar nuevas entidades sincronizables. Como utilizan `DROP CONSTRAINT` seguido de `ADD CONSTRAINT`, deben contar con revisión técnica y aprobación del responsable de la base de datos antes de integrarse.

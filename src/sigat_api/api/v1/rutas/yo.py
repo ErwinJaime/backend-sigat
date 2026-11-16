@@ -39,11 +39,11 @@ Lotes = Annotated[ServicioLotes, Depends(servicio_lotes)]
 async def inicio(
     actor: ActorDep, notis: Notis, revision: Revision, planificacion: Planificacion, lotes: Lotes
 ) -> c.InicioResumen:
-    """Fecha, «datos al» y avisos sin leer (ya funcionan).
+    """Fecha, «datos al» y avisos sin leer.
 
-    PENDIENTE: los bloques ``tecnico`` / ``productor`` / ``agronomo`` componen conteos de lotes,
-    planificación, revisiones y sincronización; vendrán cuando esos módulos estén implementados.
-    Mientras tanto van en ``null`` (nunca con valores inventados).
+    Los bloques ``tecnico`` / ``productor`` / ``agronomo`` van en ``null`` (nunca valores
+    inventados) hasta que sus módulos estén implementados: ver CHANGELOG.md, «Pendientes
+    técnicos».
     """
     cfg = obtener_configuracion()
     ahora = datetime.now(UTC)

@@ -1,14 +1,21 @@
-"""Reglas del módulo configuracion: pendientes de implementar (cada una cuenta para RNF-017)."""
+"""Reglas del módulo configuracion. Cada regla cuenta para la cobertura de RNF-017."""
 
+import os
 from datetime import date
 from decimal import Decimal
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
+from sigat_api.api.fabricas import servicio_paquete
 from sigat_api.compartido.errores import Conflicto
 from sigat_api.compartido.tipos import Actor, Cliente, RolCodigo
+from sigat_api.config import Configuracion
+from sigat_api.infra.seguridad.tokens import ServicioTokens
 from sigat_api.modules.configuracion import esquemas as e
+from sigat_api.modules.configuracion.dominio import reticula_valida
 from sigat_api.modules.configuracion.servicio import ServicioTrampas
 
 PENDIENTE = pytest.mark.skip(reason="Por implementar")
@@ -66,9 +73,15 @@ def test_configuracion_02() -> None:
 
 
 @pytest.mark.regla
-@PENDIENTE
 def test_configuracion_03() -> None:
     """retícula menor o igual a la distancia mínima se rechaza (§5.3)."""
+    # §5.3 (Arquitectura §5.3 / RN-004): la celda debe SUPERAR la distancia mínima entre
+    # trampas. El servicio valida la regla con `dominio.reticula_valida` (el alta en
+    # ServicioReticula.crear aún es NoImplementado), así que se prueba aquí la regla misma:
+    # igual o menor que la distancia mínima → rechazada; estrictamente mayor → aceptada.
+    assert not reticula_valida(60, 60)  # igual a la distancia mínima -> rechazada
+    assert not reticula_valida(40, 60)  # menor que la distancia mínima -> rechazada
+    assert reticula_valida(80, 60)  # mayor que la distancia mínima -> aceptada
 
 
 class _RepoTrampaInexistente:
@@ -122,7 +135,47 @@ async def test_configuracion_05() -> None:
     assert any("fuera del lote" in a for a in resultado.advertencias)
 
 
+class _ServicioPaqueteVigente:
+    """Simula el contrato de ``ServicioPaqueteCampo.contenido`` (aún ``NoImplementado``):
+    devuelve ``None`` cuando ``If-None-Match`` trae el hash del paquete vigente, y la ruta
+    lo traduce en 304. Registra el valor recibido para comprobar que la ruta reenvía la
+    cabecera sin tocarla."""
+
+    def __init__(self, hash_vigente: str) -> None:
+        self.hash_vigente = hash_vigente
+        self.recibido: str | None = None
+
+    async def contenido(self, actor: Actor, pred_id: int, si_no_coincide: str | None) -> Any:
+        self.recibido = si_no_coincide
+        assert si_no_coincide == f'"{self.hash_vigente}"', "este test cubre solo el hash vigente"
+        return None
+
+
+def _token_acceso(rol: RolCodigo, usua_id: int = 2) -> str:
+    """Token JWT firmado válido para autenticar al actor en las rutas."""
+    cfg = Configuracion(jwt_secreto=SecretStr(os.environ["SIGAT_JWT_SECRETO"]))
+    token, _ = ServicioTokens(cfg).emitir_acceso(usua_id, rol, None, Cliente.WEB)
+    return token
+
+
 @pytest.mark.regla
-@PENDIENTE
-def test_configuracion_06() -> None:
-    """paquete de campo responde 304 con If-None-Match vigente."""
+def test_configuracion_06(cliente: TestClient) -> None:
+    """paquete de campo responde 304 con If-None-Match vigente (ADR-09)."""
+    # La ruta (api/v1/rutas/predios.py ``paquete_contenido``) sí está implementada: pasa
+    # ``If-None-Match`` al servicio y traduce None (paquete no modificado) en 304. El servicio
+    # que compara el hash con la cabecera aún es NoImplementado, así que aquí se simula su
+    # contrato documentado y se comprueba el comportamiento real de la ruta.
+    hash_vigente = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"  # pragma: allowlist secret (SHA-256 de cadena vacía, constante pública)
+    servicio = _ServicioPaqueteVigente(hash_vigente)
+    cliente.app.dependency_overrides[servicio_paquete] = lambda: servicio
+
+    respuesta = cliente.get(
+        "/api/v1/predios/1/paquete-campo/contenido",
+        headers={
+            "Authorization": f"Bearer {_token_acceso(RolCodigo.TECNICO)}",
+            "If-None-Match": f'"{hash_vigente}"',
+        },
+    )
+
+    assert respuesta.status_code == 304  # no modificado: el dispositivo ya tiene el vigente
+    assert servicio.recibido == f'"{hash_vigente}"'  # la cabecera llega al servicio sin tocar

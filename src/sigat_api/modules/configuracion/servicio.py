@@ -63,8 +63,8 @@ class ServicioLotes:
         ``incluir_indicadores`` es de la web (tarjetas del panel de administración). Los indicadores
         se calculan con las visitas, el programa y los periodos de trampeo, que son de otro sprint
         (fuera del alcance del issue #6); mientras tanto el bloque va en ``null`` (lo admite el
-        esquema) en vez de inventar cifras. PENDIENTE DE REVISIÓN: no existe vista ni función en la
-        BD que calcule los campos obligatorios de ``IndicadoresLote``.
+        esquema) en vez de inventar cifras. La BD aún no tiene vista ni función que calcule los
+        campos obligatorios de ``IndicadoresLote``: ver CHANGELOG.md, «Pendientes técnicos».
         """
         filas = await self._repo.lotes_visibles(actor.usua_id, pred_id)
         return [e.Lote(**fila) for fila in filas]

@@ -58,9 +58,12 @@ afirmar «el código es un stub», no la regla.
 ## Cierre del Sprint 2 (backend)
 
 - **Contrato OpenAPI regenerado** (`contracts/openapi.json`): la frase del código 422
-  pasó de «Unprocessable Entity» a «Unprocessable Content» en starlette >= 1.x; el
-  contrato comitado quedó obsoleto y tumbaba la puerta «Contrato OpenAPI sincronizado»
-  del CI. Regenerado con el toolchain actual del CI.
+  pasó de «Unprocessable Entity» a «Unprocessable Content» en starlette >= 1.x /
+  CPython 3.13 (RFC 9110). El contrato es el mismo para todos, así que
+  `scripts/exportar_openapi.py` ahora **normaliza las cuatro frases renombradas
+  (413/414/416/422) a su forma RFC 9110 al generar y al verificar**; la puerta del
+  CI y el desarrollo local producen bytes idénticos aunque el intérprete difiera
+  (el CI usa Python 3.12, el desarrollo 3.14).
 - **`pyproject.toml`**: se eliminó `readme = "README.md"` (el documento vive fuera del
   repo por decisión de equipo); sin esto, `pip install -e .` fallaba y con él el job de
   calidad del CI.

@@ -1,0 +1,154 @@
+Project sigat { database_type: 'PostgreSQL' }
+
+Table fenologia_regla {
+  fenr_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  espc_id integer [not null, note: 'Referencia a especie_cultivo(espc_id).']
+  feno_id integer [not null, note: 'Referencia a fenologia(feno_id).']
+  fenr_dias_desde integer [not null, note: '[ud: días desde la plantación] límite inferior inclusivo.']
+  fenr_dias_hasta integer [note: '[ud: días desde la plantación] Límite superior exclusivo; nulo = sin límite.']
+  fenr_vigente_desde date [not null, note: 'Primer día de vigencia de la regla.']
+  fenr_vigente_hasta date [note: 'Primer día en que la regla deja de regir (exclusivo); nulo = vigente.']
+}
+
+Table lote {
+  lote_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  lote_codigo varchar [note: 'Código del lote dentro del predio (RDD-002); único por predio.']
+  lote_descripcion varchar [not null, note: 'Descripción libre del lote (no es única; el identificador de negocio es (pred_id, lote_codigo)).']
+  lote_area numeric(14,4) [not null, note: '[ud: ha] Área declarada. Unidad por CONFIRMAR con los datos reales.']
+  pred_id integer [not null, note: 'Referencia a predio(pred_id).']
+  espc_id integer [note: 'Especie de cultivo del lote. Forma parte de la FK compuesta (espc_id, vari_id) hacia variedad_cultivo, que garantiza que la variedad es de esa especie.']
+  vari_id integer [note: 'Referencia a variedad_cultivo(vari_id).']
+  lote_fecha_plantacion date [note: 'Fecha de plantación; base para derivar la etapa fenológica (RN-012).']
+  lote_fecha_registro date [not null, note: 'Fecha de registro del lote; inicio de su actividad.']
+  lote_fecha_actualizacion date [note: 'Fecha de la última actualización del registro.']
+  lote_fecha_baja date [note: 'Primer día en que el lote deja de estar activo (nulo = activo). Permite validar "el lote debe estar activo en el periodo inspeccionado" (Arquitectura 5.3).']
+  lote_tecnico_registro_id integer [not null, note: 'Técnico que registró el lote. Referencia a tecnico(tecn_id).']
+  lote_tecnico_actualizacion_id integer [note: 'Técnico que hizo la última actualización del lote. Referencia a tecnico(tecn_id).']
+  indexes {
+    (lote_id, pred_id) [unique]
+    (pred_id, lote_codigo) [unique]
+  }
+}
+
+Table lote_geometria {
+  lotg_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  lotg_version integer [not null, note: 'Número de versión de la geometría del lote (1, 2, …).']
+  lotg_geom "geometry(MultiPolygon,4326)" [not null, note: 'Polígono del lote, SRID 4326, válido y no vacío.']
+  lotg_area_m2 numeric [note: '[ud: m2] Área geodésica calculada (geography); columna derivada, no editable.']
+  lotg_vigente_desde timestamptz [not null, note: 'Inicio de vigencia de la versión (inclusive).']
+  lotg_vigente_hasta timestamptz [note: 'Fin de vigencia de la versión (exclusivo); nulo = vigente.']
+  lotg_fuente varchar [note: 'Origen de la geometría (GPS del dispositivo, digitalización, importación).']
+  lotg_motivo varchar [note: 'Motivo del cambio de geometría.']
+  lotg_registrado_en timestamptz [not null, default: `now()`, note: 'Momento en que se registró la versión.']
+  lotg_registrado_por integer [note: 'Usuario que registró la versión (opcional).']
+  indexes {
+    (lote_id, lotg_version) [unique]
+  }
+}
+
+Table paquete_campo {
+  paqu_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  pred_id integer [not null, note: 'Predio del paquete de datos para campo. Forma parte de la FK compuesta (prog_id, pred_id) hacia programa_inspeccion.']
+  paqu_version integer [not null, note: 'Número de versión del paquete del predio.']
+  prog_id integer [not null, note: 'Referencia a programa_inspeccion(prog_id).']
+  paqu_hash character(64) [not null, note: 'SHA-256 hexadecimal del contenido del paquete.']
+  paqu_generado_en timestamptz [not null, default: `now()`, note: 'Momento en que se generó el paquete.']
+  paqu_invalidado_en timestamptz [note: 'Momento en que el paquete dejó de ser válido (cambio de configuración).']
+  paqu_motivo_invalidacion varchar [note: 'Motivo de la invalidación.']
+  indexes {
+    (pred_id, paqu_version) [unique]
+  }
+}
+
+Table predio {
+  pred_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  pred_codigo varchar [unique, note: 'Código interno del predio (parte del código de trampa cuando no hay ruta). Único.']
+  pred_nombre varchar [not null, note: 'Nombre del predio.']
+  muni_id integer [not null, note: 'Referencia a municipio(muni_id).']
+  pred_area numeric(14,4) [not null, note: '[ud: ha] Área declarada del predio. Unidad por CONFIRMAR con los datos reales (el frontend usa hectáreas).']
+  pers_cc bigint [not null, note: 'Referencia a productor(pers_cc).']
+  pred_geom "geometry(MultiPolygon,4326)" [note: 'Límite del predio, SRID 4326. Nulo hasta cargar el polígono (fuente pendiente de definir).']
+  pred_zona_horaria varchar [not null, default: `'America/Bogota'::character varying`, note: 'ADR-10: zona horaria IANA del predio; las marcas temporales se guardan en UTC (timestamptz).']
+  pred_fecha_registro date [not null, note: 'Fecha de registro del predio.']
+  pred_fecha_actualizacion date [note: 'Fecha de la última actualización del registro (antes era obligatoria; ahora nula hasta que haya una).']
+  pred_tecnico_registro_id integer [not null, note: 'Técnico que registró el predio. Referencia a tecnico(tecn_id).']
+  pred_tecnico_actualizacion_id integer [note: 'Técnico que hizo la última actualización del predio. Referencia a tecnico(tecn_id).']
+}
+
+Table programa_inspeccion {
+  prog_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  pred_id integer [not null, note: 'Predio del programa de inspección. Forma parte de la FK compuesta (reti_id, pred_id) hacia reticula y de la FK hacia predio.']
+  prog_version integer [not null, note: 'Número de versión de la configuración del predio (1, 2, …).']
+  prog_vigente_desde date [not null, note: 'Primer día de vigencia (inclusive).']
+  prog_vigente_hasta date [note: 'Primer día en que deja de regir (exclusivo); nulo = vigente.']
+  prog_ciclo_inicio date [note: 'Inicio del ciclo de cultivo del programa (opcional).']
+  prog_ciclo_fin date [note: 'Fin del ciclo de cultivo del programa (opcional; definición del ciclo pendiente).']
+  prog_periodo_lectura_dias smallint [not null, note: '[ud: días] RN-007: 7 a 14 días en predios de exportación (UQQ-003 pide confirmarlo).']
+  prog_distancia_min_trampas_m smallint [not null, note: '[ud: m] RN-004: distancia mínima entre trampas, 40 a 60 m. El valor exacto es parámetro por predio.']
+  reti_id integer [note: 'Referencia a reticula(reti_id).']
+  prog_proveedor_imagen varchar [note: 'Proveedor de imagen satelital configurado (UQQ-007 pendiente).']
+  prog_umbral_exportacion_mtd numeric(10,4) [note: '[ud: moscas/trampa/día] Umbral de MTD de exportación. NO INVENTADO: nulo hasta que UQQ-004 se resuelva.']
+  norm_id integer [note: 'Referencia a norma(norm_id).']
+  prog_motivo_cambio varchar [note: 'Motivo del cambio respecto de la versión anterior.']
+  prog_creado_por integer [note: 'Referencia a usuario(usua_id).']
+  prog_creado_en timestamptz [not null, default: `now()`, note: 'Momento en que se creó la versión.']
+  indexes {
+    (pred_id, prog_version) [unique]
+    (prog_id, pred_id) [unique]
+  }
+}
+
+Table programa_umbral {
+  prog_id integer [not null, note: 'Referencia a programa_inspeccion(prog_id).']
+  esce_id integer [not null, note: 'Referencia a escenario_trampeo(esce_id).']
+  prou_mtd_desde numeric(10,4) [not null, note: '[ud: moscas/trampa/día] Límite inferior del escenario en este programa.']
+  prou_mtd_hasta numeric(10,4) [note: '[ud: moscas/trampa/día] Límite superior; nulo = sin límite.']
+  indexes {
+    (prog_id, esce_id) [pk]
+  }
+}
+
+Table reticula {
+  reti_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  pred_id integer [not null, note: 'Referencia a predio(pred_id).']
+  reti_resolucion_m integer [not null, note: '[ud: m] Lado de la celda.']
+  reti_fecha_corte_imagen date [note: 'Fecha de corte de la imagen satelital usada (RDD-003).']
+  reti_creada_en timestamptz [not null, default: `now()`, note: 'Momento en que se creó la retícula.']
+  indexes {
+    (reti_id, pred_id) [unique]
+    (pred_id, reti_resolucion_m) [unique]
+  }
+}
+
+Table reticula_celda {
+  retc_id bigint [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  reti_id integer [not null, note: 'Referencia a reticula(reti_id).']
+  retc_codigo varchar [not null, note: 'Código de la celda dentro de la retícula (p. ej. C3).']
+  retc_geom "geometry(Polygon,4326)" [not null, note: 'Polígono de la celda, SRID 4326, válido.']
+  indexes {
+    (reti_id, retc_codigo) [unique]
+  }
+}
+
+Table usuario_predio {
+  usup_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  pred_id integer [not null, note: 'Referencia a predio(pred_id).']
+  rol_id integer [not null, note: 'Referencia a rol(rol_id).']
+  usup_desde date [not null, default: `CURRENT_DATE`, note: 'Primer día en que rige la asignación (inclusive).']
+  usup_hasta date [note: 'Primer día en que deja de regir (exclusivo); nulo = vigente.']
+  usup_asignado_por integer [note: 'Referencia a usuario(usua_id).']
+  usup_creado_en timestamptz [not null, default: `now()`, note: 'Momento en que se creó la asignación.']
+}
+
+Ref: lote.pred_id > predio.pred_id
+Ref: lote_geometria.lote_id > lote.lote_id
+Ref: reticula.pred_id > predio.pred_id
+Ref: reticula_celda.reti_id > reticula.reti_id
+Ref: usuario_predio.pred_id > predio.pred_id
+Ref: programa_inspeccion.pred_id > predio.pred_id
+Ref: programa_inspeccion.(reti_id, pred_id) > reticula.(reti_id, pred_id)
+Ref: programa_umbral.prog_id > programa_inspeccion.prog_id
+Ref: paquete_campo.pred_id > predio.pred_id
+Ref: paquete_campo.(prog_id, pred_id) > programa_inspeccion.(prog_id, pred_id)

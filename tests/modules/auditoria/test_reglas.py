@@ -82,5 +82,5 @@ async def test_auditoria_02() -> None:
         EntradaAuditoria.model_validate({**_fila_bita(), "usua_contrasena": "$argon2id$v=19$..."})
     with pytest.raises(ValidationError):
         EntradaAuditoria.model_validate(
-            {**_fila_bita(), "contrasena_hash": "9f2b..."}
-        )  # pragma: allowlist secret
+            {**_fila_bita(), "contrasena_hash": "9f2b..."}  # pragma: allowlist secret
+        )

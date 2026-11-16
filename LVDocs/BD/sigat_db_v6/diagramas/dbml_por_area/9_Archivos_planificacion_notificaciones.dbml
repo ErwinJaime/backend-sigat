@@ -1,0 +1,137 @@
+Project sigat { database_type: 'PostgreSQL' }
+
+Table archivo_adjunto {
+  arch_id uuid [pk, not null, note: 'Identificador del archivo (UUID generado en el dispositivo cuando nace allí).']
+  arch_clase varchar [not null, note: 'Para qué se usa: foto_evidencia, foto_perfil, documento_instruccion o imagen_diseno. Las tablas que lo referencian exigen la clase correcta.']
+  arch_nombre_original varchar [note: 'Nombre del archivo tal como lo eligió el usuario (opcional).']
+  arch_mime varchar [not null, note: 'Tipo de contenido validado en el servidor por el contenido, no por la extensión: JPG, PNG, WebP, PDF o Word.']
+  arch_tamano_bytes bigint [not null, note: '[ud: bytes] Tamaño. Máximo 8 MB para imágenes y 10 MB para documentos (reglas del frontend; a confirmar).']
+  arch_hash_sha256 character(64) [not null, note: 'SHA-256 del contenido en hexadecimal; permite verificar integridad y detectar duplicados.']
+  arch_paginas smallint [note: 'Número de páginas cuando es un PDF (opcional).']
+  arch_ref_almacenamiento varchar [note: 'Referencia (clave) del objeto en el almacén de objetos; nula mientras no se ha subido el binario.']
+  arch_estado varchar [not null, default: `'pendiente_contenido'::character varying`, note: 'pendiente_contenido (llegó el metadato, falta el binario), almacenado o rechazado (el servidor revalidó y lo descartó).']
+  arch_motivo_rechazo varchar [note: 'Motivo cuando el servidor rechaza el archivo.']
+  usua_id integer [note: 'Usuario que lo subió (nulo para recursos del sistema, p. ej. imágenes de diseño).']
+  disp_id uuid [note: 'Dispositivo de origen (nulo para recursos del sistema).']
+  arch_t_captura timestamptz [not null, default: `now()`, note: 'Momento en que se tomó o eligió el archivo (reloj del dispositivo).']
+  arch_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el metadato (reloj del servidor).']
+  arch_t_almacenado timestamptz [note: 'Momento en que quedó guardado el binario.']
+  indexes {
+    (arch_id, arch_clase) [unique]
+  }
+}
+
+Table categoria_notificacion {
+  cate_id integer [pk, not null, increment, note: 'Identificador de la categoría.']
+  cate_codigo varchar [not null, unique, note: 'Código estable que usa el frontend (asignacion, alertas_fitosanitarias, recordatorios_inspeccion, avisos_predio, sincronizacion).']
+  cate_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+}
+
+Table evidencia {
+  evid_id uuid [pk, not null, note: 'Identificador de la evidencia (UUID generado en el dispositivo).']
+  arch_id uuid [not null, note: 'Archivo de la fotografía (clase foto_evidencia).']
+  evid_clase varchar [note: 'Clase constante foto_evidencia: hace que la FK compuesta solo admita fotos de evidencia.']
+  lect_id uuid [note: 'Versión de la lectura de trampa que respalda (excluyente con hall_id).']
+  hall_id uuid [note: 'Versión del hallazgo que respalda (excluyente con lect_id).']
+  evid_observacion text [not null, default: `''::text`, note: 'Observación que escribió quien tomó la foto (puede estar vacía).']
+  evid_geom "geometry(Point,4326)" [note: 'Punto donde se tomó la foto (WGS84), si el dispositivo lo tenía.']
+  evid_precision_m real [note: '[ud: m] Precisión del GPS al tomar la foto.']
+  usua_id integer [not null, note: 'Usuario que capturó la evidencia.']
+  disp_id uuid [not null, note: 'Dispositivo que la capturó.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que la trajo (idempotencia).']
+  evid_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor la recibió.']
+  indexes {
+    (arch_id, evid_clase) [unique]
+  }
+}
+
+Table imagen_diseno {
+  imag_id integer [pk, not null, increment, note: 'Identificador interno de la imagen de diseño.']
+  imag_codigo varchar [not null, note: 'Nombre estable con el que la app pide la imagen (p. ej. login_hero, logo_oficial).']
+  imag_version smallint [not null, default: `1`, note: 'Versión de la imagen; al cambiarla se inserta una nueva y se desactiva la anterior.']
+  imag_uso varchar [not null, note: 'Dónde se muestra en la aplicación.']
+  arch_id uuid [not null, note: 'Archivo que contiene la imagen.']
+  arch_clase varchar [not null, default: `'imagen_diseno'::character varying`, note: 'Clase constante imagen_diseno para la FK compuesta.']
+  imag_activa boolean [not null, default: `true`, note: 'Solo una versión por código está activa.']
+  imag_creada_en timestamptz [not null, default: `now()`, note: 'Cuándo se registró esta versión.']
+  indexes {
+    (imag_codigo, imag_version) [unique]
+    (arch_id, arch_clase) [unique]
+  }
+}
+
+Table notificacion {
+  noti_id bigint [pk, not null, increment, note: 'Identificador del aviso.']
+  usua_id integer [not null, note: 'Destinatario (el servidor lo deduce del evento, no de la app).']
+  cate_id integer [not null, note: 'Categoría del aviso.']
+  noti_titulo varchar [not null, note: 'Título corto del aviso.']
+  noti_cuerpo text [not null, note: 'Texto del aviso.']
+  noti_evento_clave varchar [not null, note: 'Clave del evento que lo originó (p. ej. planificacion:<id>:asignada); con el usuario es única para no duplicar avisos.']
+  noti_destino_ruta varchar [note: 'Pantalla de la app a la que lleva el aviso al tocarlo.']
+  noti_destino_argumento varchar [note: 'Parámetro de la pantalla destino (p. ej. el id de la planificación).']
+  noti_creada_en timestamptz [not null, default: `now()`, note: 'Cuándo se generó el aviso (reloj del servidor).']
+  noti_leida_en timestamptz [note: 'Cuándo lo leyó el usuario; nulo = no leído.']
+  indexes {
+    (usua_id, noti_evento_clave) [unique]
+  }
+}
+
+Table perfil_usuario {
+  usua_id integer [pk, not null, note: 'Usuario dueño del perfil.']
+  arch_id_foto uuid [note: 'Foto de perfil (archivo de clase foto_perfil); nula si no tiene.']
+  perf_foto_clase varchar [note: 'Clase constante foto_perfil para la FK compuesta.']
+  perf_notificaciones_activas boolean [not null, default: `true`, note: 'Interruptor general de notificaciones.']
+  perf_actualizado_en timestamptz [not null, default: `now()`, note: 'Última vez que el usuario cambió su perfil.']
+}
+
+Table planificacion {
+  plan_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador de la planificación.']
+  usua_id_destinatario integer [not null, note: 'Usuario que debe aceptar o rechazar; su rol debe corresponder al destino.']
+  usua_id_creador integer [not null, note: 'Agrónomo/Supervisor que la creó.']
+  plan_actividad varchar [not null, note: 'Actividad a realizar (texto libre, p. ej. "Muestreo de cultivos").']
+  plan_fecha_inicio date [not null, note: 'Fecha de inicio.']
+  plan_fecha_fin date [note: 'Fecha de fin (opcional; no anterior al inicio).']
+  plan_hora_desde "time without time zone" [note: 'Hora de inicio del horario diario (opcional, junto con hora_hasta).']
+  plan_hora_hasta "time without time zone" [note: 'Hora de fin del horario diario.']
+  plan_observaciones text [note: 'Indicaciones adicionales del Agrónomo.']
+  arch_id_documento uuid [note: 'Documento de instrucciones adjunto (PDF, Word o imagen).']
+  plan_documento_clase varchar [note: 'Clase constante documento_instruccion para la FK compuesta.']
+  plan_estado varchar [not null, default: `'pendiente'::character varying`, note: 'pendiente, aceptada, rechazada o completada.']
+  plan_motivo_rechazo varchar [note: 'Motivo del rechazo; obligatorio si y solo si está rechazada.']
+  plan_respondida_en timestamptz [note: 'Cuándo respondió el destinatario; nula mientras está pendiente.']
+  plan_creada_en timestamptz [not null, default: `now()`, note: 'Cuándo se creó (reloj del servidor).']
+}
+
+Table planificacion_lote {
+  plan_id uuid [not null, note: 'Planificación.']
+  lote_id integer [not null, note: 'Lote incluido.']
+  indexes {
+    (plan_id, lote_id) [pk]
+  }
+}
+
+Table preferencia_notificacion {
+  usua_id integer [not null, note: 'Usuario que fija la preferencia.']
+  cate_id integer [not null, note: 'Categoría de aviso.']
+  pref_habilitada boolean [not null, note: 'Si el usuario quiere recibir avisos de esta categoría.']
+  indexes {
+    (usua_id, cate_id) [pk]
+  }
+}
+
+Table restablecimiento_clave {
+  rest_id bigint [pk, not null, increment, note: 'Identificador de la solicitud.']
+  usua_id integer [not null, note: 'Usuario que pidió restablecer la contraseña.']
+  rest_token_hash character(64) [not null, unique, note: 'SHA-256 del token enviado por correo; el token no se guarda.']
+  rest_solicitado_en timestamptz [not null, default: `now()`, note: 'Cuándo se pidió.']
+  rest_expira_en timestamptz [not null, note: 'Hasta cuándo sirve el token.']
+  rest_usado_en timestamptz [note: 'Cuándo se usó (uso único); nulo = sin usar.']
+}
+
+Ref: evidencia.(arch_id, evid_clase) > archivo_adjunto.(arch_id, arch_clase)
+Ref: imagen_diseno.(arch_id, arch_clase) > archivo_adjunto.(arch_id, arch_clase)
+Ref: perfil_usuario.(arch_id_foto, perf_foto_clase) > archivo_adjunto.(arch_id, arch_clase)
+Ref: preferencia_notificacion.cate_id > categoria_notificacion.cate_id
+Ref: notificacion.cate_id > categoria_notificacion.cate_id
+Ref: planificacion.(arch_id_documento, plan_documento_clase) > archivo_adjunto.(arch_id, arch_clase)
+Ref: planificacion_lote.plan_id > planificacion.plan_id

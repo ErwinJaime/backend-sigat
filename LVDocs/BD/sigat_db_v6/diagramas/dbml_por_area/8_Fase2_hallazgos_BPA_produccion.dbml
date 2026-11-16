@@ -1,0 +1,133 @@
+Project sigat { database_type: 'PostgreSQL' }
+
+Table bpa_verificacion {
+  bpav_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  bpav_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  bpav_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  visi_id uuid [not null, note: 'Referencia a visita_lote(visi_id).']
+  lote_id integer [not null, note: 'Referencia a visita_lote(lote_id).']
+  crit_id integer [not null, note: 'Referencia a criterio_bpa(crit_id).']
+  bpav_cumple boolean [not null, note: 'Resultado del criterio de BPA en el lote y la visita: cumple (verdadero) o no cumple.']
+  bpav_observacion text [note: 'Observación del inspector sobre el criterio.']
+  bpav_linaje sigat.d_linaje [not null, default: `'inspeccion_oficial'::text`, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  bpav_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  bpav_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  bpav_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  bpav_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  bpav_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  bpav_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (bpav_registro_id, bpav_version) [unique]
+  }
+}
+
+Table criterio_bpa {
+  crit_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  crit_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  crit_activo boolean [not null, default: `true`, note: 'Falso = criterio retirado del catálogo.']
+}
+
+Table estimacion_produccion {
+  esti_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  esti_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  esti_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  esti_num_arboles integer [not null, note: '[ud: árboles] Número de árboles considerados en la estimación.']
+  esti_rendimiento_arbol numeric(12,3) [not null, note: 'Rendimiento esperado por árbol, en la unidad esti_rendimiento_uni_id (p. ej. kg por árbol).']
+  esti_rendimiento_uni_id integer [not null, note: 'Referencia a unidad_medida(unid_id).']
+  esti_metodo varchar [not null, note: 'Método de estimación empleado (RF-030). Texto libre hasta definir vocabulario.']
+  esti_linaje sigat.d_linaje [not null, default: `'autorreporte'::text`, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  esti_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  esti_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  esti_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  esti_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  esti_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  esti_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (esti_registro_id, esti_version) [unique]
+  }
+}
+
+Table hallazgo {
+  hall_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  hall_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  hall_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  retc_id bigint [note: 'Referencia a reticula_celda(retc_id).']
+  plag_id integer [not null, note: 'Referencia a plaga_enfermedad(plag_id).']
+  seve_id integer [not null, note: 'Referencia a severidad(seve_id).']
+  hall_geom "geometry(Point,4326)" [note: 'Punto del hallazgo en el mapa (opcional; el marcado preciso RF-010 se difiere a v0.4).']
+  hall_observaciones text [note: 'Observaciones libres del hallazgo.']
+  hall_linaje sigat.d_linaje [not null, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  hall_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  hall_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  hall_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  hall_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  hall_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  hall_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (hall_registro_id, hall_version) [unique]
+  }
+}
+
+Table manejo_agronomico {
+  mane_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  mane_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  mane_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  tipm_id integer [not null, note: 'Referencia a tipo_manejo(tipm_id).']
+  mane_observaciones text [note: 'Observaciones libres de la operación.']
+  mane_linaje sigat.d_linaje [not null, default: `'autorreporte'::text`, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  mane_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  mane_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  mane_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  mane_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  mane_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  mane_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (mane_registro_id, mane_version) [unique]
+  }
+}
+
+Table plaga_enfermedad {
+  plag_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  plag_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  plag_tipo varchar [not null, note: 'plaga, enfermedad u hongo (RF-029).']
+}
+
+Table programa_criterio_bpa {
+  prog_id integer [not null, note: 'Referencia a programa_inspeccion(prog_id).']
+  crit_id integer [not null, note: 'Referencia a criterio_bpa(crit_id).']
+  indexes {
+    (prog_id, crit_id) [pk]
+  }
+}
+
+Table severidad {
+  seve_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  seve_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  seve_orden smallint [not null, unique, note: 'Orden ascendente de gravedad (único).']
+}
+
+Table tipo_manejo {
+  tipm_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  tipm_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+}
+
+Ref: hallazgo.plag_id > plaga_enfermedad.plag_id
+Ref: hallazgo.seve_id > severidad.seve_id
+Ref: programa_criterio_bpa.crit_id > criterio_bpa.crit_id
+Ref: bpa_verificacion.crit_id > criterio_bpa.crit_id
+Ref: manejo_agronomico.tipm_id > tipo_manejo.tipm_id

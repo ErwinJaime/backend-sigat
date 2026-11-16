@@ -1,0 +1,1188 @@
+// SIGAT – esquema v6 (PostgreSQL 16 + PostGIS). Prefijo de columnas = primeras 4 letras del nombre de la tabla. Pegar en https://dbdiagram.io/d
+// Los tipos geometry(...) son de PostGIS; dbdiagram los muestra como texto.
+Project sigat { database_type: 'PostgreSQL' }
+
+Table administrador {
+  admi_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  pers_cc bigint [not null, unique, note: 'Referencia a persona(pers_cc).']
+  cent_id integer [not null, note: 'Referencia a centro_acopio(cent_id).']
+}
+
+Table aplicacion_fitosanitaria {
+  apli_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  apli_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  apli_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  prof_id integer [note: 'Referencia a producto_fitosanitario(prof_id).']
+  apli_producto_texto varchar [note: 'Nombre del producto escrito por el productor cuando no está en el catálogo (frontend: campo libre). Obligatorio si prof_id es nulo.']
+  apli_dosis numeric(12,4) [not null, note: 'Dosis con unidad en apli_dosis_uni_id (RN-017). Las unidades admitidas están por definir (pendiente).']
+  apli_dosis_uni_id integer [not null, note: 'Referencia a unidad_medida(unid_id).']
+  apli_area_tratada numeric(12,4) [not null, note: 'Área tratada con unidad en apli_area_uni_id (normalmente ha).']
+  apli_area_uni_id integer [not null, note: 'Referencia a unidad_medida(unid_id).']
+  pers_cc_responsable bigint [note: 'Referencia a persona(pers_cc).']
+  apli_responsable_nombre varchar [note: 'Nombre del responsable cuando es una persona no registrada (externo). Obligatorio si pers_cc_responsable es nulo.']
+  apli_observaciones text [note: 'Observaciones libres del productor sobre la aplicación.']
+  apli_linaje sigat.d_linaje [not null, default: `'autorreporte'::text`, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  apli_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  apli_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  apli_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  apli_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  apli_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  apli_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (apli_registro_id, apli_version) [unique]
+  }
+}
+
+Table arbol {
+  arbo_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  arbo_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+}
+
+Table archivo_adjunto {
+  arch_id uuid [pk, not null, note: 'Identificador del archivo (UUID generado en el dispositivo cuando nace allí).']
+  arch_clase varchar [not null, note: 'Para qué se usa: foto_evidencia, foto_perfil, documento_instruccion o imagen_diseno. Las tablas que lo referencian exigen la clase correcta.']
+  arch_nombre_original varchar [note: 'Nombre del archivo tal como lo eligió el usuario (opcional).']
+  arch_mime varchar [not null, note: 'Tipo de contenido validado en el servidor por el contenido, no por la extensión: JPG, PNG, WebP, PDF o Word.']
+  arch_tamano_bytes bigint [not null, note: '[ud: bytes] Tamaño. Máximo 8 MB para imágenes y 10 MB para documentos (reglas del frontend; a confirmar).']
+  arch_hash_sha256 character(64) [not null, note: 'SHA-256 del contenido en hexadecimal; permite verificar integridad y detectar duplicados.']
+  arch_paginas smallint [note: 'Número de páginas cuando es un PDF (opcional).']
+  arch_ref_almacenamiento varchar [note: 'Referencia (clave) del objeto en el almacén de objetos; nula mientras no se ha subido el binario.']
+  arch_estado varchar [not null, default: `'pendiente_contenido'::character varying`, note: 'pendiente_contenido (llegó el metadato, falta el binario), almacenado o rechazado (el servidor revalidó y lo descartó).']
+  arch_motivo_rechazo varchar [note: 'Motivo cuando el servidor rechaza el archivo.']
+  usua_id integer [note: 'Usuario que lo subió (nulo para recursos del sistema, p. ej. imágenes de diseño).']
+  disp_id uuid [note: 'Dispositivo de origen (nulo para recursos del sistema).']
+  arch_t_captura timestamptz [not null, default: `now()`, note: 'Momento en que se tomó o eligió el archivo (reloj del dispositivo).']
+  arch_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el metadato (reloj del servidor).']
+  arch_t_almacenado timestamptz [note: 'Momento en que quedó guardado el binario.']
+  indexes {
+    (arch_id, arch_clase) [unique]
+  }
+}
+
+Table atrayente {
+  atra_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  atra_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  atra_vida_util_min_sem smallint [note: '[ud: semanas] Vida útil mínima de campo del atrayente (RN-008).']
+  atra_vida_util_max_sem smallint [note: '[ud: semanas] Vida útil máxima de campo del atrayente (RN-008).']
+}
+
+Table bitacora_auditoria {
+  bita_id bigint [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  bita_t_registro timestamptz [not null, default: `now()`, note: 'Momento (reloj del servidor) en que se escribió la entrada de bitácora.']
+  bita_tabla varchar [not null, note: 'Nombre de la tabla afectada.']
+  bita_registro varchar [not null, note: 'Clave primaria del registro afectado, en texto.']
+  bita_accion varchar [not null, note: 'Operación auditada: INSERT, UPDATE, DELETE, ACCESO (lectura de datos personales) o SYNC.']
+  bita_version integer [note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  usua_id integer [note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [note: 'Dispositivo que capturó el registro.']
+  bita_t_observacion timestamptz [note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  bita_t_captura timestamptz [note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  bita_t_sincronizacion timestamptz [note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  bita_detalle jsonb [note: 'Detalle del cambio en JSONB: fila completa (INSERT/DELETE) o pares antes/después (UPDATE). Nunca incluye contraseñas.']
+}
+
+Table bpa_verificacion {
+  bpav_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  bpav_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  bpav_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  visi_id uuid [not null, note: 'Referencia a visita_lote(visi_id).']
+  lote_id integer [not null, note: 'Referencia a visita_lote(lote_id).']
+  crit_id integer [not null, note: 'Referencia a criterio_bpa(crit_id).']
+  bpav_cumple boolean [not null, note: 'Resultado del criterio de BPA en el lote y la visita: cumple (verdadero) o no cumple.']
+  bpav_observacion text [note: 'Observación del inspector sobre el criterio.']
+  bpav_linaje sigat.d_linaje [not null, default: `'inspeccion_oficial'::text`, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  bpav_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  bpav_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  bpav_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  bpav_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  bpav_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  bpav_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (bpav_registro_id, bpav_version) [unique]
+  }
+}
+
+Table categoria_notificacion {
+  cate_id integer [pk, not null, increment, note: 'Identificador de la categoría.']
+  cate_codigo varchar [not null, unique, note: 'Código estable que usa el frontend (asignacion, alertas_fitosanitarias, recordatorios_inspeccion, avisos_predio, sincronizacion).']
+  cate_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+}
+
+Table centro_acopio {
+  cent_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  cent_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  depa_id integer [not null, note: 'Referencia a departamento(depa_id).']
+}
+
+Table concepto_aptitud {
+  conc_id bigint [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  lote_id integer [not null, note: 'Lote evaluado. Forma parte de la FK compuesta (peri_id, lote_id) hacia periodo_trampeo y de la FK hacia lote: el periodo debe ser del mismo lote.']
+  peri_id bigint [not null, note: 'Periodo de trampeo evaluado. Forma parte de las FK compuestas (peri_id, lote_id) hacia periodo_trampeo y (indi_id, peri_id) hacia indice_mtd.']
+  indi_id bigint [not null, note: 'Referencia a indice_mtd(indi_id).']
+  conc_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  conc_resultado varchar [not null, note: 'apto, no_apto o no_emitido (no_emitido = sin umbral configurado, UQQ-004).']
+  conc_fecha_efecto date [not null, note: 'Fecha desde la cual rige el concepto emitido (en una reemisión por corrección retroactiva puede ser anterior a la fecha de emisión).']
+  norm_id integer [note: 'Referencia a norma(norm_id).']
+  conc_emitido_en timestamptz [not null, default: `now()`, note: 'Momento (servidor) en que se emitió esta versión del concepto.']
+  conc_motivo varchar [note: 'Motivo de la reemisión (obligatorio desde la versión 2).']
+  indexes {
+    (lote_id, peri_id, conc_version) [unique]
+  }
+}
+
+Table condicion_trampa {
+  cond_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  cond_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  cond_activa boolean [not null, default: `true`, note: 'Falso = valor retirado del catálogo (se conserva por historia).']
+}
+
+Table cosecha {
+  cose_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  cose_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  cose_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  cose_fecha_esperada date [not null, note: 'Fecha esperada de cosecha.']
+  cose_volumen_esperado numeric(14,3) [not null, note: 'Volumen esperado, en la unidad cose_volumen_uni_id.']
+  cose_fecha_real date [note: 'Fecha en que realmente se cosechó; nula mientras no se coseche.']
+  cose_volumen_real numeric(14,3) [note: 'Volumen realmente recolectado, en cose_volumen_uni_id; nulo mientras no se coseche.']
+  cose_volumen_uni_id integer [not null, note: 'Referencia a unidad_medida(unid_id).']
+  cose_metodo_registro varchar [note: 'Método de registro (RDD-009). Vocabulario no definido en la documentación: texto libre hasta que se defina (pendiente).']
+  cose_observaciones text [note: 'Observaciones libres.']
+  cose_linaje sigat.d_linaje [not null, default: `'autorreporte'::text`, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  cose_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  cose_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  cose_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  cose_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  cose_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  cose_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (cose_registro_id, cose_version) [unique]
+  }
+}
+
+Table criterio_bpa {
+  crit_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  crit_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  crit_activo boolean [not null, default: `true`, note: 'Falso = criterio retirado del catálogo.']
+}
+
+Table departamento {
+  depa_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  depa_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  regi_id integer [not null, note: 'Referencia a region(regi_id).']
+  depa_codigo character(2) [unique, note: 'Código DANE del departamento (2 dígitos). Fuente a cargar desde DANE.']
+}
+
+Table dispositivo {
+  disp_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Dispositivo que capturó el registro.']
+  disp_nombre varchar [note: 'Nombre descriptivo del dispositivo (opcional).']
+  disp_plataforma varchar [not null, default: `'otro'::character varying`, note: 'android, ios u otro.']
+  disp_version_app varchar [note: 'Versión de la aplicación instalada.']
+  disp_registrado_en timestamptz [not null, default: `now()`, note: 'Momento en que el dispositivo se registró por primera vez.']
+  disp_ultima_sync timestamptz [note: 'Último momento en que el dispositivo sincronizó.']
+  disp_activo boolean [not null, default: `true`, note: 'Falso = dispositivo dado de baja; sus operaciones nuevas se rechazan.']
+}
+
+Table escenario_trampeo {
+  esce_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  esce_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  esce_orden smallint [not null, unique, note: 'Orden de presentación (de mayor a menor gravedad).']
+  esce_mtd_desde_defecto numeric(10,4) [note: '[ud: moscas/trampa/día] Límite inferior de referencia del escenario.']
+  esce_mtd_hasta_defecto numeric(10,4) [note: '[ud: moscas/trampa/día] Límite superior de referencia; nulo = sin límite superior.']
+  esce_fuente varchar [note: 'Fuente documental de los límites por defecto (p. ej. Levantamiento RN-002, Tabla 1, OIEA 2005).']
+}
+
+Table especie_cultivo {
+  espc_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  espc_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+}
+
+Table especie_mosca {
+  espm_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  espm_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  espm_codigo smallint [unique, note: 'Código numérico de la especie en el catálogo de captura (1 = Ceratitis capitata, 51 = No captura, 54 = No Tephritidae, 56 = Anastrepha sp.). Nulo para especies agregadas localmente.']
+  espm_tipo varchar [not null, default: `'especie'::character varying`, note: 'Naturaleza del resultado de determinación: especie, genero_sin_especie, sin_captura o no_tephritidae.']
+}
+
+Table estado_registro {
+  esta_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  esta_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+}
+
+Table estimacion_produccion {
+  esti_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  esti_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  esti_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  esti_num_arboles integer [not null, note: '[ud: árboles] Número de árboles considerados en la estimación.']
+  esti_rendimiento_arbol numeric(12,3) [not null, note: 'Rendimiento esperado por árbol, en la unidad esti_rendimiento_uni_id (p. ej. kg por árbol).']
+  esti_rendimiento_uni_id integer [not null, note: 'Referencia a unidad_medida(unid_id).']
+  esti_metodo varchar [not null, note: 'Método de estimación empleado (RF-030). Texto libre hasta definir vocabulario.']
+  esti_linaje sigat.d_linaje [not null, default: `'autorreporte'::text`, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  esti_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  esti_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  esti_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  esti_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  esti_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  esti_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (esti_registro_id, esti_version) [unique]
+  }
+}
+
+Table etapa_declarada {
+  etap_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  etap_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  etap_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  feno_id integer [not null, note: 'Referencia a fenologia(feno_id).']
+  etap_linaje sigat.d_linaje [not null, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  etap_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  etap_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  etap_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  etap_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  etap_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  etap_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (etap_registro_id, etap_version) [unique]
+  }
+}
+
+Table evidencia {
+  evid_id uuid [pk, not null, note: 'Identificador de la evidencia (UUID generado en el dispositivo).']
+  arch_id uuid [not null, note: 'Archivo de la fotografía (clase foto_evidencia).']
+  evid_clase varchar [note: 'Clase constante foto_evidencia: hace que la FK compuesta solo admita fotos de evidencia.']
+  lect_id uuid [note: 'Versión de la lectura de trampa que respalda (excluyente con hall_id).']
+  hall_id uuid [note: 'Versión del hallazgo que respalda (excluyente con lect_id).']
+  evid_observacion text [not null, default: `''::text`, note: 'Observación que escribió quien tomó la foto (puede estar vacía).']
+  evid_geom "geometry(Point,4326)" [note: 'Punto donde se tomó la foto (WGS84), si el dispositivo lo tenía.']
+  evid_precision_m real [note: '[ud: m] Precisión del GPS al tomar la foto.']
+  usua_id integer [not null, note: 'Usuario que capturó la evidencia.']
+  disp_id uuid [not null, note: 'Dispositivo que la capturó.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que la trajo (idempotencia).']
+  evid_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor la recibió.']
+  indexes {
+    (arch_id, evid_clase) [unique]
+  }
+}
+
+Table fenologia {
+  feno_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  feno_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  feno_codigo smallint [unique, note: 'Código numérico de la etapa fenológica (nulo si la etapa no tiene código).']
+}
+
+Table fenologia_regla {
+  fenr_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  espc_id integer [not null, note: 'Referencia a especie_cultivo(espc_id).']
+  feno_id integer [not null, note: 'Referencia a fenologia(feno_id).']
+  fenr_dias_desde integer [not null, note: '[ud: días desde la plantación] límite inferior inclusivo.']
+  fenr_dias_hasta integer [note: '[ud: días desde la plantación] Límite superior exclusivo; nulo = sin límite.']
+  fenr_vigente_desde date [not null, note: 'Primer día de vigencia de la regla.']
+  fenr_vigente_hasta date [note: 'Primer día en que la regla deja de regir (exclusivo); nulo = vigente.']
+}
+
+Table hallazgo {
+  hall_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  hall_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  hall_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  retc_id bigint [note: 'Referencia a reticula_celda(retc_id).']
+  plag_id integer [not null, note: 'Referencia a plaga_enfermedad(plag_id).']
+  seve_id integer [not null, note: 'Referencia a severidad(seve_id).']
+  hall_geom "geometry(Point,4326)" [note: 'Punto del hallazgo en el mapa (opcional; el marcado preciso RF-010 se difiere a v0.4).']
+  hall_observaciones text [note: 'Observaciones libres del hallazgo.']
+  hall_linaje sigat.d_linaje [not null, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  hall_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  hall_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  hall_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  hall_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  hall_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  hall_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (hall_registro_id, hall_version) [unique]
+  }
+}
+
+Table imagen_diseno {
+  imag_id integer [pk, not null, increment, note: 'Identificador interno de la imagen de diseño.']
+  imag_codigo varchar [not null, note: 'Nombre estable con el que la app pide la imagen (p. ej. login_hero, logo_oficial).']
+  imag_version smallint [not null, default: `1`, note: 'Versión de la imagen; al cambiarla se inserta una nueva y se desactiva la anterior.']
+  imag_uso varchar [not null, note: 'Dónde se muestra en la aplicación.']
+  arch_id uuid [not null, note: 'Archivo que contiene la imagen.']
+  arch_clase varchar [not null, default: `'imagen_diseno'::character varying`, note: 'Clase constante imagen_diseno para la FK compuesta.']
+  imag_activa boolean [not null, default: `true`, note: 'Solo una versión por código está activa.']
+  imag_creada_en timestamptz [not null, default: `now()`, note: 'Cuándo se registró esta versión.']
+  indexes {
+    (imag_codigo, imag_version) [unique]
+    (arch_id, arch_clase) [unique]
+  }
+}
+
+Table indice_mtd {
+  indi_id bigint [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  peri_id bigint [not null, note: 'Referencia a periodo_trampeo(peri_id).']
+  espm_id integer [note: 'Referencia a especie_mosca(espm_id).']
+  indi_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  indi_moscas integer [not null, note: '[ud: moscas] M = total de moscas capturadas en las trampas atendidas.']
+  indi_trampas integer [not null, note: '[ud: trampas] T = número de trampas atendidas.']
+  indi_dias_exposicion numeric(8,3) [not null, note: '[ud: días] D = número promedio de días de exposición de las trampas.']
+  indi_valor numeric(14,6) [note: '[ud: moscas/trampa/día] Nulo si T×D = 0.']
+  indi_unidad varchar [not null, default: `'moscas/trampa/día'::character varying`, note: 'Unidad fija del MTD: moscas/trampa/día (RN-017).']
+  indi_umbral_aplicado numeric(10,4) [note: '[ud: moscas/trampa/día] Umbral de exportación vigente a la fecha del periodo (copia). Nulo = no había umbral configurado (UQQ-004).']
+  norm_id integer [note: 'Referencia a norma(norm_id).']
+  indi_resultado_contraste sigat.d_resultado_contraste [not null, note: 'Resultado de contrastar el MTD con el umbral vigente (RF-024).']
+  esce_id integer [note: 'Escenario de trampeo (RN-002) en que cae el MTD, si el programa tiene límites configurados.']
+  indi_calculado_en timestamptz [not null, default: `now()`, note: 'Momento (servidor) en que se calculó esta versión.']
+  indi_motivo_recalculo varchar [note: 'Motivo del recálculo (obligatorio desde la versión 2), p. ej. llegada de una lectura retroactiva.']
+  indexes {
+    (indi_id, peri_id) [unique]
+  }
+}
+
+Table indice_mtd_lectura {
+  indi_id bigint [not null, note: 'Referencia a indice_mtd(indi_id).']
+  lect_id uuid [not null, note: 'Referencia a lectura_trampa(lect_id).']
+  indexes {
+    (indi_id, lect_id) [pk]
+  }
+}
+
+Table lectura_trampa {
+  lect_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  lect_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  lect_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  visi_id uuid [not null, note: 'Referencia a visita(visi_id).']
+  tram_id integer [not null, note: 'Trampa leída. Forma parte de la FK compuesta (ubic_id, tram_id) hacia ubicacion_trampa, que garantiza que la ubicación pertenece a esa trampa.']
+  ubic_id bigint [note: 'Referencia a ubicacion_trampa(ubic_id).']
+  lect_leida boolean [not null, note: 'Verdadero si la trampa se leyó; falso si no (p. ej. no encontrada). Distingue "no leída" de "cero capturas".']
+  lect_especimenes integer [note: '[ud: especímenes (individuos)] Número de moscas capturadas. Nulo si lect_leida = false.']
+  lect_justificacion varchar [note: 'Motivo por el que la trampa no se leyó (obligatorio si lect_leida = falso).']
+  cond_id integer [not null, note: 'Referencia a condicion_trampa(cond_id).']
+  lect_fecha_cambio_cuerpo date [note: 'Fecha de cambio del cuerpo de la trampa informada en esta lectura (RF-021).']
+  lect_fecha_cambio_atrayente date [note: 'Fecha de cambio de atrayente informada en esta lectura (RF-021). Requiere atra_id.']
+  atra_id integer [note: 'Referencia a atrayente(atra_id).']
+  lect_observaciones text [note: 'Observaciones libres del técnico.']
+  lect_geom "geometry(Point,4326)" [note: 'Posición GPS del dispositivo al leer (evidencia de RF-012). Opcional.']
+  lect_precision_m real [note: '[ud: m] Precisión horizontal reportada por el GPS al leer.']
+  lect_coincide_lote boolean [note: 'Resultado de la comparación trampa–lote–ubicación hecha por el dispositivo (RF-012). Falso = hubo advertencia y el usuario confirmó; no bloquea.']
+  lect_linaje sigat.d_linaje [not null, default: `'inspeccion_oficial'::text`, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  lect_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  lect_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  lect_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  lect_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  lect_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  lect_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (lect_registro_id, lect_version) [unique]
+  }
+}
+
+Table localizacion {
+  loca_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  loca_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  loca_codigo smallint [unique, note: 'Código numérico de la localización de la trampa.']
+}
+
+Table lote {
+  lote_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  lote_codigo varchar [note: 'Código del lote dentro del predio (RDD-002); único por predio.']
+  lote_descripcion varchar [not null, note: 'Descripción libre del lote (no es única; el identificador de negocio es (pred_id, lote_codigo)).']
+  lote_area numeric(14,4) [not null, note: '[ud: ha] Área declarada. Unidad por CONFIRMAR con los datos reales.']
+  pred_id integer [not null, note: 'Referencia a predio(pred_id).']
+  espc_id integer [note: 'Especie de cultivo del lote. Forma parte de la FK compuesta (espc_id, vari_id) hacia variedad_cultivo, que garantiza que la variedad es de esa especie.']
+  vari_id integer [note: 'Referencia a variedad_cultivo(vari_id).']
+  lote_fecha_plantacion date [note: 'Fecha de plantación; base para derivar la etapa fenológica (RN-012).']
+  lote_fecha_registro date [not null, note: 'Fecha de registro del lote; inicio de su actividad.']
+  lote_fecha_actualizacion date [note: 'Fecha de la última actualización del registro.']
+  lote_fecha_baja date [note: 'Primer día en que el lote deja de estar activo (nulo = activo). Permite validar "el lote debe estar activo en el periodo inspeccionado" (Arquitectura 5.3).']
+  lote_tecnico_registro_id integer [not null, note: 'Técnico que registró el lote. Referencia a tecnico(tecn_id).']
+  lote_tecnico_actualizacion_id integer [note: 'Técnico que hizo la última actualización del lote. Referencia a tecnico(tecn_id).']
+  indexes {
+    (lote_id, pred_id) [unique]
+    (pred_id, lote_codigo) [unique]
+  }
+}
+
+Table lote_geometria {
+  lotg_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  lotg_version integer [not null, note: 'Número de versión de la geometría del lote (1, 2, …).']
+  lotg_geom "geometry(MultiPolygon,4326)" [not null, note: 'Polígono del lote, SRID 4326, válido y no vacío.']
+  lotg_area_m2 numeric [note: '[ud: m2] Área geodésica calculada (geography); columna derivada, no editable.']
+  lotg_vigente_desde timestamptz [not null, note: 'Inicio de vigencia de la versión (inclusive).']
+  lotg_vigente_hasta timestamptz [note: 'Fin de vigencia de la versión (exclusivo); nulo = vigente.']
+  lotg_fuente varchar [note: 'Origen de la geometría (GPS del dispositivo, digitalización, importación).']
+  lotg_motivo varchar [note: 'Motivo del cambio de geometría.']
+  lotg_registrado_en timestamptz [not null, default: `now()`, note: 'Momento en que se registró la versión.']
+  lotg_registrado_por integer [note: 'Usuario que registró la versión (opcional).']
+  indexes {
+    (lote_id, lotg_version) [unique]
+  }
+}
+
+Table manejo_agronomico {
+  mane_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  mane_registro_id uuid [not null, note: 'Identificador lógico del registro: igual en todas sus versiones (el cliente lo genera, UUID v7).']
+  mane_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  tipm_id integer [not null, note: 'Referencia a tipo_manejo(tipm_id).']
+  mane_observaciones text [note: 'Observaciones libres de la operación.']
+  mane_linaje sigat.d_linaje [not null, default: `'autorreporte'::text`, note: 'Linaje del dato (RN-014): inspeccion_oficial o autorreporte.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  mane_t_observacion timestamptz [not null, note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  mane_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  mane_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  mane_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  mane_anulada boolean [not null, default: `false`, note: 'Verdadero si esta versión anula el registro. Los registros no se borran (RN-009).']
+  mane_motivo_anulacion varchar [note: 'Motivo obligatorio cuando la versión es una anulación.']
+  indexes {
+    (mane_registro_id, mane_version) [unique]
+  }
+}
+
+Table municipio {
+  muni_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  muni_descripcion varchar [not null, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  depa_id integer [not null, note: 'Referencia a departamento(depa_id).']
+  muni_codigo character(3) [note: 'Código DANE del municipio dentro del departamento (3 dígitos).']
+  indexes {
+    (depa_id, muni_codigo) [unique]
+  }
+}
+
+Table norma {
+  norm_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  norm_codigo varchar [not null, unique, note: 'Identificador corto único de la norma.']
+  norm_titulo varchar [not null, note: 'Título completo de la norma.']
+  norm_emisor varchar [not null, note: 'Entidad que expide la norma.']
+  norm_anio smallint [note: 'Año de expedición de la norma.']
+  norm_texto_disponible boolean [not null, default: `false`, note: 'Falso si el equipo aún no dispone del texto de la norma.']
+}
+
+Table notificacion {
+  noti_id bigint [pk, not null, increment, note: 'Identificador del aviso.']
+  usua_id integer [not null, note: 'Destinatario (el servidor lo deduce del evento, no de la app).']
+  cate_id integer [not null, note: 'Categoría del aviso.']
+  noti_titulo varchar [not null, note: 'Título corto del aviso.']
+  noti_cuerpo text [not null, note: 'Texto del aviso.']
+  noti_evento_clave varchar [not null, note: 'Clave del evento que lo originó (p. ej. planificacion:<id>:asignada); con el usuario es única para no duplicar avisos.']
+  noti_destino_ruta varchar [note: 'Pantalla de la app a la que lleva el aviso al tocarlo.']
+  noti_destino_argumento varchar [note: 'Parámetro de la pantalla destino (p. ej. el id de la planificación).']
+  noti_creada_en timestamptz [not null, default: `now()`, note: 'Cuándo se generó el aviso (reloj del servidor).']
+  noti_leida_en timestamptz [note: 'Cuándo lo leyó el usuario; nulo = no leído.']
+  indexes {
+    (usua_id, noti_evento_clave) [unique]
+  }
+}
+
+Table operacion_sync {
+  oper_id bigint [pk, not null, increment, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_cliente_id uuid [not null, note: 'Identificador de la operación generado en el dispositivo (UUID); junto con disp_id es la clave de idempotencia.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  oper_entidad varchar [not null, note: 'Tabla de dominio a la que se refiere la operación.']
+  oper_accion varchar [not null, note: 'crear, corregir (nueva versión) o anular.']
+  oper_registro_id uuid [not null, note: 'Identificador lógico del registro afectado.']
+  oper_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  oper_hash_contenido character(64) [not null, note: 'SHA-256 hex del contenido canónico. Mismo (disp_id, oper_cliente_id) con hash distinto = conflicto (RN-010).']
+  oper_clasificacion sigat.d_clasificacion_operacion [not null, note: 'Clasificación del servidor (ADR-04): alta_nueva, alta_retroactiva, correccion, revisar o rechazada.']
+  oper_motivo varchar [note: 'Motivo de la clasificación (obligatorio si revisar o rechazada).']
+  oper_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  oper_t_recepcion timestamptz [not null, default: `now()`, note: 'Momento (servidor) en que se recibió por primera vez la operación.']
+  oper_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  oper_resuelve_oper_id bigint [note: 'Referencia a operacion_sync(oper_id).']
+  oper_payload jsonb [note: 'Sobre de transporte recibido (JSONB). Obligatorio solo en operaciones revisar/rechazada; no se consulta relacionalmente.']
+  indexes {
+    (disp_id, oper_cliente_id) [unique]
+  }
+}
+
+Table paquete_campo {
+  paqu_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  pred_id integer [not null, note: 'Predio del paquete de datos para campo. Forma parte de la FK compuesta (prog_id, pred_id) hacia programa_inspeccion.']
+  paqu_version integer [not null, note: 'Número de versión del paquete del predio.']
+  prog_id integer [not null, note: 'Referencia a programa_inspeccion(prog_id).']
+  paqu_hash character(64) [not null, note: 'SHA-256 hexadecimal del contenido del paquete.']
+  paqu_generado_en timestamptz [not null, default: `now()`, note: 'Momento en que se generó el paquete.']
+  paqu_invalidado_en timestamptz [note: 'Momento en que el paquete dejó de ser válido (cambio de configuración).']
+  paqu_motivo_invalidacion varchar [note: 'Motivo de la invalidación.']
+  indexes {
+    (pred_id, paqu_version) [unique]
+  }
+}
+
+Table perfil_usuario {
+  usua_id integer [pk, not null, note: 'Usuario dueño del perfil.']
+  arch_id_foto uuid [note: 'Foto de perfil (archivo de clase foto_perfil); nula si no tiene.']
+  perf_foto_clase varchar [note: 'Clase constante foto_perfil para la FK compuesta.']
+  perf_notificaciones_activas boolean [not null, default: `true`, note: 'Interruptor general de notificaciones.']
+  perf_actualizado_en timestamptz [not null, default: `now()`, note: 'Última vez que el usuario cambió su perfil.']
+}
+
+Table periodo_trampeo {
+  peri_id bigint [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  vigi_id integer [not null, note: 'Referencia a vigilancia(vigi_id).']
+  prog_id integer [not null, note: 'Referencia a programa_inspeccion(prog_id).']
+  peri_inicio date [not null, note: 'Primer día del periodo (inclusive).']
+  peri_fin date [not null, note: 'Último día del periodo (inclusive).']
+  peri_estado varchar [not null, default: `'abierto'::character varying`, note: 'abierto (aún recibe lecturas) o cerrado.']
+  peri_creado_en timestamptz [not null, default: `now()`, note: 'Momento en que se creó el periodo.']
+  indexes {
+    (peri_id, lote_id) [unique]
+  }
+}
+
+Table permiso {
+  perm_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  perm_codigo varchar [not null, unique, note: 'Código recurso.accion del permiso (minúsculas).']
+  perm_descripcion varchar [not null, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+}
+
+Table persona {
+  pers_cc bigint [pk, not null, note: 'Identificador del registro (clave primaria).']
+  pers_nombre varchar [not null, note: 'Nombres o razón social.']
+  pers_apellido varchar [not null, note: 'Apellidos o razón social complementaria.']
+  pers_telefono varchar [note: 'Teléfono: solo dígitos, con + opcional (tipo texto: antes numeric perdía ceros y prefijos).']
+  pers_direccion varchar [note: 'Dirección de contacto (opcional; dato personal).']
+  pers_correo varchar [note: 'Correo electrónico (opcional, único sin distinguir mayúsculas).']
+}
+
+Table plaga_enfermedad {
+  plag_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  plag_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  plag_tipo varchar [not null, note: 'plaga, enfermedad u hongo (RF-029).']
+}
+
+Table planificacion {
+  plan_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador de la planificación.']
+  usua_id_destinatario integer [not null, note: 'Usuario que debe aceptar o rechazar; su rol debe corresponder al destino.']
+  usua_id_creador integer [not null, note: 'Agrónomo/Supervisor que la creó.']
+  plan_actividad varchar [not null, note: 'Actividad a realizar (texto libre, p. ej. "Muestreo de cultivos").']
+  plan_fecha_inicio date [not null, note: 'Fecha de inicio.']
+  plan_fecha_fin date [note: 'Fecha de fin (opcional; no anterior al inicio).']
+  plan_hora_desde "time without time zone" [note: 'Hora de inicio del horario diario (opcional, junto con hora_hasta).']
+  plan_hora_hasta "time without time zone" [note: 'Hora de fin del horario diario.']
+  plan_observaciones text [note: 'Indicaciones adicionales del Agrónomo.']
+  arch_id_documento uuid [note: 'Documento de instrucciones adjunto (PDF, Word o imagen).']
+  plan_documento_clase varchar [note: 'Clase constante documento_instruccion para la FK compuesta.']
+  plan_estado varchar [not null, default: `'pendiente'::character varying`, note: 'pendiente, aceptada, rechazada o completada.']
+  plan_motivo_rechazo varchar [note: 'Motivo del rechazo; obligatorio si y solo si está rechazada.']
+  plan_respondida_en timestamptz [note: 'Cuándo respondió el destinatario; nula mientras está pendiente.']
+  plan_creada_en timestamptz [not null, default: `now()`, note: 'Cuándo se creó (reloj del servidor).']
+}
+
+Table planificacion_lote {
+  plan_id uuid [not null, note: 'Planificación.']
+  lote_id integer [not null, note: 'Lote incluido.']
+  indexes {
+    (plan_id, lote_id) [pk]
+  }
+}
+
+Table predio {
+  pred_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  pred_codigo varchar [unique, note: 'Código interno del predio (parte del código de trampa cuando no hay ruta). Único.']
+  pred_nombre varchar [not null, note: 'Nombre del predio.']
+  muni_id integer [not null, note: 'Referencia a municipio(muni_id).']
+  pred_area numeric(14,4) [not null, note: '[ud: ha] Área declarada del predio. Unidad por CONFIRMAR con los datos reales (el frontend usa hectáreas).']
+  pers_cc bigint [not null, note: 'Referencia a productor(pers_cc).']
+  pred_geom "geometry(MultiPolygon,4326)" [note: 'Límite del predio, SRID 4326. Nulo hasta cargar el polígono (fuente pendiente de definir).']
+  pred_zona_horaria varchar [not null, default: `'America/Bogota'::character varying`, note: 'ADR-10: zona horaria IANA del predio; las marcas temporales se guardan en UTC (timestamptz).']
+  pred_fecha_registro date [not null, note: 'Fecha de registro del predio.']
+  pred_fecha_actualizacion date [note: 'Fecha de la última actualización del registro (antes era obligatoria; ahora nula hasta que haya una).']
+  pred_tecnico_registro_id integer [not null, note: 'Técnico que registró el predio. Referencia a tecnico(tecn_id).']
+  pred_tecnico_actualizacion_id integer [note: 'Técnico que hizo la última actualización del predio. Referencia a tecnico(tecn_id).']
+}
+
+Table preferencia_notificacion {
+  usua_id integer [not null, note: 'Usuario que fija la preferencia.']
+  cate_id integer [not null, note: 'Categoría de aviso.']
+  pref_habilitada boolean [not null, note: 'Si el usuario quiere recibir avisos de esta categoría.']
+  indexes {
+    (usua_id, cate_id) [pk]
+  }
+}
+
+Table producto_fitosanitario {
+  prof_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  prof_nombre varchar [not null, unique, note: 'Nombre comercial (único).']
+  prof_ingrediente_activo varchar [note: 'Ingrediente activo (opcional).']
+  prof_registro varchar [unique, note: 'Número de registro oficial del producto (opcional, único).']
+  prof_activo boolean [not null, default: `true`, note: 'Falso = producto retirado del catálogo.']
+}
+
+Table productor {
+  pers_cc bigint [pk, not null, note: 'Referencia a persona(pers_cc).']
+  prod_fecha_registro date [not null, note: 'Fecha de registro del productor.']
+  prod_fecha_actualizacion date [note: 'Fecha de la última actualización.']
+  prod_tecnico_registro_id integer [not null, note: 'Técnico que registró al productor. Referencia a tecnico(tecn_id).']
+  prod_tecnico_actualizacion_id integer [note: 'Técnico que hizo la última actualización del productor. Referencia a tecnico(tecn_id).']
+  prod_activo boolean [not null, default: `true`, note: 'Verdadero = productor activo.']
+  muni_id integer [not null, note: 'Referencia a municipio(muni_id).']
+}
+
+Table programa_criterio_bpa {
+  prog_id integer [not null, note: 'Referencia a programa_inspeccion(prog_id).']
+  crit_id integer [not null, note: 'Referencia a criterio_bpa(crit_id).']
+  indexes {
+    (prog_id, crit_id) [pk]
+  }
+}
+
+Table programa_inspeccion {
+  prog_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  pred_id integer [not null, note: 'Predio del programa de inspección. Forma parte de la FK compuesta (reti_id, pred_id) hacia reticula y de la FK hacia predio.']
+  prog_version integer [not null, note: 'Número de versión de la configuración del predio (1, 2, …).']
+  prog_vigente_desde date [not null, note: 'Primer día de vigencia (inclusive).']
+  prog_vigente_hasta date [note: 'Primer día en que deja de regir (exclusivo); nulo = vigente.']
+  prog_ciclo_inicio date [note: 'Inicio del ciclo de cultivo del programa (opcional).']
+  prog_ciclo_fin date [note: 'Fin del ciclo de cultivo del programa (opcional; definición del ciclo pendiente).']
+  prog_periodo_lectura_dias smallint [not null, note: '[ud: días] RN-007: 7 a 14 días en predios de exportación (UQQ-003 pide confirmarlo).']
+  prog_distancia_min_trampas_m smallint [not null, note: '[ud: m] RN-004: distancia mínima entre trampas, 40 a 60 m. El valor exacto es parámetro por predio.']
+  reti_id integer [note: 'Referencia a reticula(reti_id).']
+  prog_proveedor_imagen varchar [note: 'Proveedor de imagen satelital configurado (UQQ-007 pendiente).']
+  prog_umbral_exportacion_mtd numeric(10,4) [note: '[ud: moscas/trampa/día] Umbral de MTD de exportación. NO INVENTADO: nulo hasta que UQQ-004 se resuelva.']
+  norm_id integer [note: 'Referencia a norma(norm_id).']
+  prog_motivo_cambio varchar [note: 'Motivo del cambio respecto de la versión anterior.']
+  prog_creado_por integer [note: 'Referencia a usuario(usua_id).']
+  prog_creado_en timestamptz [not null, default: `now()`, note: 'Momento en que se creó la versión.']
+  indexes {
+    (pred_id, prog_version) [unique]
+    (prog_id, pred_id) [unique]
+  }
+}
+
+Table programa_umbral {
+  prog_id integer [not null, note: 'Referencia a programa_inspeccion(prog_id).']
+  esce_id integer [not null, note: 'Referencia a escenario_trampeo(esce_id).']
+  prou_mtd_desde numeric(10,4) [not null, note: '[ud: moscas/trampa/día] Límite inferior del escenario en este programa.']
+  prou_mtd_hasta numeric(10,4) [note: '[ud: moscas/trampa/día] Límite superior; nulo = sin límite.']
+  indexes {
+    (prog_id, esce_id) [pk]
+  }
+}
+
+Table rango_departamento {
+  depa_id integer [pk, not null, note: 'Referencia a departamento(depa_id).']
+  rang_long_min float8 [not null, note: '[ud: grados] Longitud mínima de la caja del departamento.']
+  rang_long_max float8 [not null, note: '[ud: grados] Longitud máxima de la caja del departamento.']
+  rang_lat_min float8 [not null, note: '[ud: grados] Latitud mínima de la caja del departamento.']
+  rang_lat_max float8 [not null, note: '[ud: grados] Latitud máxima de la caja del departamento.']
+}
+
+Table recepcion_sync {
+  rece_id bigint [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  oper_id bigint [not null, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  rece_t timestamptz [not null, default: `now()`, note: 'Momento (servidor) del reenvío.']
+  rece_hash character(64) [not null, note: 'SHA-256 del contenido recibido en el reenvío.']
+  rece_resultado varchar [not null, note: 'idempotente_repetida (mismo contenido) o conflicto_contenido (mismo identificador, contenido distinto).']
+}
+
+Table region {
+  regi_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  regi_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+}
+
+Table restablecimiento_clave {
+  rest_id bigint [pk, not null, increment, note: 'Identificador de la solicitud.']
+  usua_id integer [not null, note: 'Usuario que pidió restablecer la contraseña.']
+  rest_token_hash character(64) [not null, unique, note: 'SHA-256 del token enviado por correo; el token no se guarda.']
+  rest_solicitado_en timestamptz [not null, default: `now()`, note: 'Cuándo se pidió.']
+  rest_expira_en timestamptz [not null, note: 'Hasta cuándo sirve el token.']
+  rest_usado_en timestamptz [note: 'Cuándo se usó (uso único); nulo = sin usar.']
+}
+
+Table reticula {
+  reti_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  pred_id integer [not null, note: 'Referencia a predio(pred_id).']
+  reti_resolucion_m integer [not null, note: '[ud: m] Lado de la celda.']
+  reti_fecha_corte_imagen date [note: 'Fecha de corte de la imagen satelital usada (RDD-003).']
+  reti_creada_en timestamptz [not null, default: `now()`, note: 'Momento en que se creó la retícula.']
+  indexes {
+    (reti_id, pred_id) [unique]
+    (pred_id, reti_resolucion_m) [unique]
+  }
+}
+
+Table reticula_celda {
+  retc_id bigint [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  reti_id integer [not null, note: 'Referencia a reticula(reti_id).']
+  retc_codigo varchar [not null, note: 'Código de la celda dentro de la retícula (p. ej. C3).']
+  retc_geom "geometry(Polygon,4326)" [not null, note: 'Polígono de la celda, SRID 4326, válido.']
+  indexes {
+    (reti_id, retc_codigo) [unique]
+  }
+}
+
+Table rol {
+  rol_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  rol_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  rol_codigo varchar [unique, note: 'Código estable del rol para el código de aplicación (MAYÚSCULAS_Y_GUION_BAJO).']
+  rol_ambito varchar [not null, default: `'predio'::character varying`, note: 'global (rige en todo el sistema) o predio (rige sobre los predios asignados).']
+}
+
+Table rol_permiso {
+  rol_id integer [not null, note: 'Referencia a rol(rol_id).']
+  perm_id integer [not null, note: 'Referencia a permiso(perm_id).']
+  indexes {
+    (rol_id, perm_id) [pk]
+  }
+}
+
+Table ruta {
+  ruta_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  ruta_nombre varchar [not null, unique, note: 'Nombre de la ruta (único).']
+  cent_id integer [not null, note: 'Referencia a centro_acopio(cent_id).']
+  muni_id integer [note: 'Municipio al que pertenece la ruta (aporta los 5 dígitos Divipola del código de ruta). Nulo hasta confirmarlo.']
+  ruta_descripcion varchar [not null, note: 'Descripción libre de la ruta (no es única; el identificador de negocio es el nombre ruta_nombre y (cent_id, ruta_codigo)).']
+  ruta_codigo varchar [note: 'Código de la ruta (alfanumérico, hasta 10); único dentro del centro de acopio.']
+  ruta_fecha_registro date [not null, note: 'Fecha de registro de la ruta.']
+  ruta_fecha_actualizacion date [note: 'Fecha de la última actualización.']
+  ruta_admin_registro_id integer [not null, note: 'Administrador que registró la ruta. Referencia a administrador(admi_id).']
+  ruta_admin_actualizacion_id integer [note: 'Administrador que hizo la última actualización de la ruta. Referencia a administrador(admi_id).']
+  esta_id integer [not null, note: 'Referencia a estado_registro(esta_id).']
+  indexes {
+    (cent_id, ruta_codigo) [unique]
+  }
+}
+
+Table severidad {
+  seve_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  seve_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  seve_orden smallint [not null, unique, note: 'Orden ascendente de gravedad (único).']
+}
+
+Table tecnico {
+  tecn_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  pers_cc bigint [not null, unique, note: 'Referencia a persona(pers_cc).']
+  cent_id integer [not null, note: 'Referencia a centro_acopio(cent_id).']
+  tecn_codigo varchar [unique, note: 'Código del recolector: Divipola (5 dígitos) + consecutivo de 3 dígitos. Nulo si no tiene.']
+  admi_id integer [not null, note: 'Referencia a administrador(admi_id).']
+  tecn_fecha_registro date [not null, note: 'Fecha de registro del técnico.']
+  tecn_fecha_actualizacion date [note: 'Fecha de la última actualización.']
+  esta_id integer [not null, note: 'Referencia a estado_registro(esta_id).']
+}
+
+Table tipo_manejo {
+  tipm_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  tipm_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+}
+
+Table tipo_trampa {
+  tipt_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  tipt_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  tipt_paridad varchar [note: 'impar o par: paridad que debe cumplir el número de trampa (RN-005). Nulo = sin regla.']
+}
+
+Table trampa {
+  tram_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  tram_codigo varchar [unique, note: 'Código oficial impreso en la trampa. Formato verificado de forma mínima (el Manual Técnico T1 no está disponible): ver pendientes.']
+  tram_numero integer [note: 'Número de trampa extraído del código (columna generada). Jackson impar / McPhail par (RN-005).']
+  tipt_id integer [not null, note: 'Referencia a tipo_trampa(tipt_id).']
+  atra_id integer [not null, note: 'Referencia a atrayente(atra_id).']
+  esta_id integer [not null, note: 'Referencia a estado_registro(esta_id).']
+  tram_fecha_registro date [not null, note: 'Fecha de registro de la trampa.']
+  tram_fecha_actualizacion date [note: 'Fecha de la última actualización del registro.']
+  tram_fecha_estado date [note: 'Fecha del último cambio de estado (esta_id) de la trampa.']
+  tram_tecnico_registro_id integer [not null, note: 'Técnico que registró la trampa. Referencia a tecnico(tecn_id).']
+  tram_tecnico_actualizacion_id integer [note: 'Técnico que hizo la última actualización de la trampa. Referencia a tecnico(tecn_id).']
+  tram_tecnico_estado_id integer [note: 'Técnico que cambió por última vez el estado de la trampa. Referencia a tecnico(tecn_id).']
+}
+
+Table ubicacion_trampa {
+  ubic_id bigint [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  tram_id integer [not null, note: 'Referencia a trampa(tram_id).']
+  pred_id integer [not null, note: 'Redundancia controlada: lote_id determina pred_id; la FK compuesta (lote_id, pred_id) impide la incoherencia. Permite conservar filas heredadas sin lote.']
+  lote_id integer [note: 'Referencia a lote(lote_id).']
+  ubic_fecha date [not null, note: 'Fecha de instalación en este puesto (inclusive). ubic_fecha_fin = primer día en que ya no está (exclusivo; retiro o reubicación).']
+  ubic_fecha_fin date [note: 'Primer día en que la trampa ya no está en este puesto (exclusivo); nulo = vigente.']
+  tecn_id integer [not null, note: 'Referencia a tecnico(tecn_id).']
+  vigi_id integer [not null, note: 'Referencia a vigilancia(vigi_id).']
+  ruta_id integer [note: 'Referencia a ruta(ruta_id).']
+  retc_id bigint [note: 'Referencia a reticula_celda(retc_id).']
+  loca_id integer [note: 'Referencia a localizacion(loca_id).']
+  arbo_id integer [note: 'Referencia a arbol(arbo_id).']
+  ubic_long numeric(8,5) [not null, note: '[ud: grados decimales WGS84] 5 decimales (RN-006); numeric evita ruido de punto flotante.']
+  ubic_lat numeric(7,5) [not null, note: '[ud: grados decimales WGS84] Latitud con 5 decimales (RN-006).']
+  ubic_alt float8 [note: '[ud: m s. n. m.] Altitud; puede faltar si el GPS no la entrega.']
+  ubic_referencia varchar [note: 'Descripción libre del sitio (opcional).']
+  ubic_geom "geometry(Point,4326)" [note: 'Punto SRID 4326 derivado de ubic_long/ubic_lat (columna generada: una sola fuente de verdad). Base de ST_Contains contra lote_geometria.']
+  ubic_origen varchar [not null, default: `'operacion'::character varying`, note: 'operacion = creada con las reglas vigentes; legado = migrada del esquema anterior sin lote asignado.']
+  ubic_registrado_en timestamptz [not null, default: `now()`, note: 'Momento en que se registró la ubicación.']
+  indexes {
+    (ubic_id, tram_id) [unique]
+  }
+}
+
+Table unidad_medida {
+  unid_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  unid_simbolo varchar [not null, unique, note: 'Símbolo de la unidad (único), p. ej. kg, ha, mL/L.']
+  unid_nombre varchar [not null, note: 'Nombre de la unidad.']
+  unid_magnitud varchar [not null, note: 'Magnitud: masa, area, volumen, longitud o concentracion.']
+}
+
+Table usuario {
+  usua_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  pers_cc bigint [not null, unique, note: 'Referencia a persona(pers_cc).']
+  usua_usuario varchar [not null, note: 'Nombre de usuario (3–64 caracteres; único sin distinguir mayúsculas).']
+  usua_contrasena varchar [note: 'Solo HASH (argon2id o bcrypt). Nulo si la cuenta usa proveedor externo o está pendiente de establecer contraseña.']
+  usua_proveedor varchar [not null, default: `'local'::character varying`, note: 'local (autenticación propia) o externo (proveedor de identidad institucional, RI-008).']
+  usua_sujeto_externo varchar [note: 'Identificador del usuario en el proveedor externo (no es una credencial). Obligatorio si usua_proveedor = externo.']
+  usua_requiere_reinicio boolean [not null, default: `false`, note: 'Verdadero = la cuenta local aún no tiene contraseña y debe establecerla.']
+  rol_id integer [not null, note: 'Referencia a rol(rol_id).']
+  esta_id integer [not null, note: 'Referencia a estado_registro(esta_id).']
+  usua_ultimo_acceso timestamptz [note: 'Último acceso exitoso (para revisión de cuentas inactivas).']
+  indexes {
+    (usua_proveedor, usua_sujeto_externo) [unique]
+  }
+}
+
+Table usuario_predio {
+  usup_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  pred_id integer [not null, note: 'Referencia a predio(pred_id).']
+  rol_id integer [not null, note: 'Referencia a rol(rol_id).']
+  usup_desde date [not null, default: `CURRENT_DATE`, note: 'Primer día en que rige la asignación (inclusive).']
+  usup_hasta date [note: 'Primer día en que deja de regir (exclusivo); nulo = vigente.']
+  usup_asignado_por integer [note: 'Referencia a usuario(usua_id).']
+  usup_creado_en timestamptz [not null, default: `now()`, note: 'Momento en que se creó la asignación.']
+}
+
+Table variedad_cultivo {
+  vari_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  espc_id integer [not null, note: 'Referencia a especie_cultivo(espc_id).']
+  vari_descripcion varchar [not null, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  indexes {
+    (espc_id, vari_descripcion) [unique]
+    (espc_id, vari_id) [unique]
+  }
+}
+
+Table vigilancia {
+  vigi_id integer [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  vigi_descripcion varchar [not null, unique, note: 'Texto descriptivo del valor del catálogo (único, no vacío).']
+  vigi_codigo smallint [unique, note: 'Código numérico del tipo de vigilancia.']
+}
+
+Table visita {
+  visi_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Identificador del registro (clave primaria).']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_id bigint [not null, unique, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  pred_id integer [not null, note: 'Referencia a predio(pred_id).']
+  ruta_id integer [note: 'Referencia a ruta(ruta_id).']
+  visi_t_inicio_obs timestamptz [not null, note: 'Momento observado de inicio de la visita (reloj del dispositivo).']
+  visi_t_fin_obs timestamptz [not null, note: 'Momento observado de cierre de la visita.']
+  visi_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  visi_t_sincronizacion timestamptz [not null, default: `now()`, note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  visi_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  visi_estado_revision sigat.d_estado_revision [not null, default: `'pendiente'::text`, note: 'Revisión del Agrónomo/Supervisor (origen: frontend; confirmar como regla institucional).']
+  visi_motivo_revision varchar [note: 'Motivo cuando la visita pasa a revisión.']
+  visi_revisada_por integer [note: 'Referencia a usuario(usua_id).']
+  visi_revisada_en timestamptz [note: 'Momento de la última revisión del Agrónomo/Supervisor.']
+  indexes {
+    (visi_id, pred_id) [unique]
+  }
+}
+
+Table visita_lote {
+  visi_id uuid [not null, note: 'Referencia a visita(visi_id).']
+  lote_id integer [not null, note: 'Referencia a lote(lote_id).']
+  pred_id integer [not null, note: 'Predio de la visita. Forma parte de las FK compuestas (visi_id, pred_id) hacia visita y (lote_id, pred_id) hacia lote: el lote visitado debe ser del predio visitado.']
+  indexes {
+    (visi_id, lote_id) [pk]
+  }
+}
+
+Ref: administrador.pers_cc > persona.pers_cc
+Ref: departamento.regi_id > region.regi_id
+Ref: municipio.depa_id > departamento.depa_id
+Ref: administrador.cent_id > centro_acopio.cent_id
+Ref: ruta.cent_id > centro_acopio.cent_id
+Ref: rango_departamento.depa_id > departamento.depa_id
+Ref: centro_acopio.depa_id > departamento.depa_id
+Ref: variedad_cultivo.espc_id > especie_cultivo.espc_id
+Ref: tecnico.pers_cc > persona.pers_cc
+Ref: tecnico.cent_id > centro_acopio.cent_id
+Ref: tecnico.admi_id > administrador.admi_id
+Ref: tecnico.esta_id > estado_registro.esta_id
+Ref: productor.pers_cc > persona.pers_cc
+Ref: productor.prod_tecnico_registro_id > tecnico.tecn_id
+Ref: productor.prod_tecnico_actualizacion_id > tecnico.tecn_id
+Ref: productor.muni_id > municipio.muni_id
+Ref: ruta.muni_id > municipio.muni_id
+Ref: ruta.ruta_admin_registro_id > administrador.admi_id
+Ref: ruta.ruta_admin_actualizacion_id > administrador.admi_id
+Ref: ruta.esta_id > estado_registro.esta_id
+Ref: usuario.pers_cc > persona.pers_cc
+Ref: usuario.rol_id > rol.rol_id
+Ref: usuario.esta_id > estado_registro.esta_id
+Ref: rol_permiso.rol_id > rol.rol_id
+Ref: rol_permiso.perm_id > permiso.perm_id
+Ref: predio.muni_id > municipio.muni_id
+Ref: predio.pers_cc > productor.pers_cc
+Ref: predio.pred_tecnico_registro_id > tecnico.tecn_id
+Ref: predio.pred_tecnico_actualizacion_id > tecnico.tecn_id
+Ref: lote.pred_id > predio.pred_id
+Ref: lote.espc_id > especie_cultivo.espc_id
+Ref: lote.(espc_id, vari_id) > variedad_cultivo.(espc_id, vari_id)
+Ref: lote.lote_tecnico_registro_id > tecnico.tecn_id
+Ref: lote.lote_tecnico_actualizacion_id > tecnico.tecn_id
+Ref: lote_geometria.lote_id > lote.lote_id
+Ref: reticula.pred_id > predio.pred_id
+Ref: fenologia_regla.espc_id > especie_cultivo.espc_id
+Ref: reticula_celda.reti_id > reticula.reti_id
+Ref: usuario_predio.usua_id > usuario.usua_id
+Ref: usuario_predio.pred_id > predio.pred_id
+Ref: usuario_predio.rol_id > rol.rol_id
+Ref: usuario_predio.usup_asignado_por > usuario.usua_id
+Ref: programa_inspeccion.pred_id > predio.pred_id
+Ref: programa_inspeccion.(reti_id, pred_id) > reticula.(reti_id, pred_id)
+Ref: programa_inspeccion.norm_id > norma.norm_id
+Ref: programa_inspeccion.prog_creado_por > usuario.usua_id
+Ref: programa_umbral.prog_id > programa_inspeccion.prog_id
+Ref: programa_umbral.esce_id > escenario_trampeo.esce_id
+Ref: fenologia_regla.feno_id > fenologia.feno_id
+Ref: paquete_campo.pred_id > predio.pred_id
+Ref: paquete_campo.(prog_id, pred_id) > programa_inspeccion.(prog_id, pred_id)
+Ref: trampa.tipt_id > tipo_trampa.tipt_id
+Ref: trampa.atra_id > atrayente.atra_id
+Ref: trampa.esta_id > estado_registro.esta_id
+Ref: trampa.tram_tecnico_registro_id > tecnico.tecn_id
+Ref: trampa.tram_tecnico_actualizacion_id > tecnico.tecn_id
+Ref: trampa.tram_tecnico_estado_id > tecnico.tecn_id
+Ref: visita.oper_id > operacion_sync.oper_id
+Ref: visita.usua_id > usuario.usua_id
+Ref: visita.pred_id > predio.pred_id
+Ref: ubicacion_trampa.tram_id > trampa.tram_id
+Ref: ubicacion_trampa.pred_id > predio.pred_id
+Ref: ubicacion_trampa.(lote_id, pred_id) > lote.(lote_id, pred_id)
+Ref: ubicacion_trampa.tecn_id > tecnico.tecn_id
+Ref: ubicacion_trampa.vigi_id > vigilancia.vigi_id
+Ref: ubicacion_trampa.ruta_id > ruta.ruta_id
+Ref: ubicacion_trampa.retc_id > reticula_celda.retc_id
+Ref: ubicacion_trampa.loca_id > localizacion.loca_id
+Ref: ubicacion_trampa.arbo_id > arbol.arbo_id
+Ref: operacion_sync.disp_id > dispositivo.disp_id
+Ref: operacion_sync.usua_id > usuario.usua_id
+Ref: operacion_sync.oper_resuelve_oper_id > operacion_sync.oper_id
+Ref: visita.ruta_id > ruta.ruta_id
+Ref: visita.visi_revisada_por > usuario.usua_id
+Ref: visita_lote.(visi_id, pred_id) > visita.(visi_id, pred_id)
+Ref: recepcion_sync.oper_id > operacion_sync.oper_id
+Ref: bitacora_auditoria.usua_id > usuario.usua_id
+Ref: bitacora_auditoria.disp_id > dispositivo.disp_id
+Ref: visita.disp_id > dispositivo.disp_id
+Ref: visita_lote.(lote_id, pred_id) > lote.(lote_id, pred_id)
+Ref: lectura_trampa.visi_id > visita.visi_id
+Ref: lectura_trampa.tram_id > trampa.tram_id
+Ref: lectura_trampa.(ubic_id, tram_id) > ubicacion_trampa.(ubic_id, tram_id)
+Ref: lectura_trampa.cond_id > condicion_trampa.cond_id
+Ref: lectura_trampa.atra_id > atrayente.atra_id
+Ref: lectura_trampa.usua_id > usuario.usua_id
+Ref: lectura_trampa.disp_id > dispositivo.disp_id
+Ref: lectura_trampa.oper_id > operacion_sync.oper_id
+Ref: aplicacion_fitosanitaria.pers_cc_responsable > persona.pers_cc
+Ref: aplicacion_fitosanitaria.lote_id > lote.lote_id
+Ref: aplicacion_fitosanitaria.prof_id > producto_fitosanitario.prof_id
+Ref: aplicacion_fitosanitaria.apli_dosis_uni_id > unidad_medida.unid_id
+Ref: aplicacion_fitosanitaria.apli_area_uni_id > unidad_medida.unid_id
+Ref: aplicacion_fitosanitaria.usua_id > usuario.usua_id
+Ref: aplicacion_fitosanitaria.disp_id > dispositivo.disp_id
+Ref: aplicacion_fitosanitaria.oper_id > operacion_sync.oper_id
+Ref: cosecha.lote_id > lote.lote_id
+Ref: cosecha.cose_volumen_uni_id > unidad_medida.unid_id
+Ref: cosecha.usua_id > usuario.usua_id
+Ref: cosecha.disp_id > dispositivo.disp_id
+Ref: cosecha.oper_id > operacion_sync.oper_id
+Ref: etapa_declarada.lote_id > lote.lote_id
+Ref: etapa_declarada.feno_id > fenologia.feno_id
+Ref: etapa_declarada.usua_id > usuario.usua_id
+Ref: etapa_declarada.disp_id > dispositivo.disp_id
+Ref: etapa_declarada.oper_id > operacion_sync.oper_id
+Ref: periodo_trampeo.lote_id > lote.lote_id
+Ref: periodo_trampeo.vigi_id > vigilancia.vigi_id
+Ref: periodo_trampeo.prog_id > programa_inspeccion.prog_id
+Ref: indice_mtd.peri_id > periodo_trampeo.peri_id
+Ref: indice_mtd.espm_id > especie_mosca.espm_id
+Ref: indice_mtd.norm_id > norma.norm_id
+Ref: indice_mtd.esce_id > escenario_trampeo.esce_id
+Ref: indice_mtd_lectura.indi_id > indice_mtd.indi_id
+Ref: indice_mtd_lectura.lect_id > lectura_trampa.lect_id
+Ref: manejo_agronomico.disp_id > dispositivo.disp_id
+Ref: concepto_aptitud.lote_id > lote.lote_id
+Ref: concepto_aptitud.(peri_id, lote_id) > periodo_trampeo.(peri_id, lote_id)
+Ref: concepto_aptitud.(indi_id, peri_id) > indice_mtd.(indi_id, peri_id)
+Ref: concepto_aptitud.norm_id > norma.norm_id
+Ref: hallazgo.lote_id > lote.lote_id
+Ref: hallazgo.retc_id > reticula_celda.retc_id
+Ref: hallazgo.plag_id > plaga_enfermedad.plag_id
+Ref: hallazgo.seve_id > severidad.seve_id
+Ref: hallazgo.usua_id > usuario.usua_id
+Ref: hallazgo.disp_id > dispositivo.disp_id
+Ref: hallazgo.oper_id > operacion_sync.oper_id
+Ref: programa_criterio_bpa.prog_id > programa_inspeccion.prog_id
+Ref: programa_criterio_bpa.crit_id > criterio_bpa.crit_id
+Ref: bpa_verificacion.(visi_id, lote_id) > visita_lote.(visi_id, lote_id)
+Ref: bpa_verificacion.crit_id > criterio_bpa.crit_id
+Ref: bpa_verificacion.usua_id > usuario.usua_id
+Ref: bpa_verificacion.disp_id > dispositivo.disp_id
+Ref: bpa_verificacion.oper_id > operacion_sync.oper_id
+Ref: manejo_agronomico.oper_id > operacion_sync.oper_id
+Ref: evidencia.oper_id > operacion_sync.oper_id
+Ref: estimacion_produccion.lote_id > lote.lote_id
+Ref: estimacion_produccion.esti_rendimiento_uni_id > unidad_medida.unid_id
+Ref: estimacion_produccion.usua_id > usuario.usua_id
+Ref: estimacion_produccion.disp_id > dispositivo.disp_id
+Ref: estimacion_produccion.oper_id > operacion_sync.oper_id
+Ref: manejo_agronomico.lote_id > lote.lote_id
+Ref: manejo_agronomico.tipm_id > tipo_manejo.tipm_id
+Ref: manejo_agronomico.usua_id > usuario.usua_id
+Ref: evidencia.hall_id > hallazgo.hall_id
+Ref: evidencia.usua_id > usuario.usua_id
+Ref: evidencia.disp_id > dispositivo.disp_id
+Ref: archivo_adjunto.usua_id > usuario.usua_id
+Ref: archivo_adjunto.disp_id > dispositivo.disp_id
+Ref: evidencia.(arch_id, evid_clase) > archivo_adjunto.(arch_id, arch_clase)
+Ref: evidencia.lect_id > lectura_trampa.lect_id
+Ref: imagen_diseno.(arch_id, arch_clase) > archivo_adjunto.(arch_id, arch_clase)
+Ref: perfil_usuario.usua_id > usuario.usua_id
+Ref: perfil_usuario.(arch_id_foto, perf_foto_clase) > archivo_adjunto.(arch_id, arch_clase)
+Ref: preferencia_notificacion.usua_id > usuario.usua_id
+Ref: preferencia_notificacion.cate_id > categoria_notificacion.cate_id
+Ref: notificacion.usua_id > usuario.usua_id
+Ref: notificacion.cate_id > categoria_notificacion.cate_id
+Ref: planificacion.usua_id_destinatario > usuario.usua_id
+Ref: planificacion.usua_id_creador > usuario.usua_id
+Ref: planificacion.(arch_id_documento, plan_documento_clase) > archivo_adjunto.(arch_id, arch_clase)
+Ref: planificacion_lote.plan_id > planificacion.plan_id
+Ref: planificacion_lote.lote_id > lote.lote_id
+Ref: restablecimiento_clave.usua_id > usuario.usua_id
+// Grupos por área (dbdiagram los dibuja como recuadros)
+TableGroup 1_Catalogos_geograficos {
+  arbol
+  atrayente
+  centro_acopio
+  condicion_trampa
+  departamento
+  escenario_trampeo
+  especie_cultivo
+  especie_mosca
+  estado_registro
+  fenologia
+  localizacion
+  municipio
+  norma
+  producto_fitosanitario
+  rango_departamento
+  region
+  rol
+  tipo_trampa
+  unidad_medida
+  variedad_cultivo
+  vigilancia
+}
+
+TableGroup 2_Personas_usuarios_roles {
+  administrador
+  permiso
+  persona
+  productor
+  rol_permiso
+  ruta
+  tecnico
+  usuario
+}
+
+TableGroup 3_Predios_lotes_programa {
+  fenologia_regla
+  lote
+  lote_geometria
+  paquete_campo
+  predio
+  programa_inspeccion
+  programa_umbral
+  reticula
+  reticula_celda
+  usuario_predio
+}
+
+TableGroup 4_Trampas_ubicaciones {
+  trampa
+  ubicacion_trampa
+}
+
+TableGroup 5_Sincronizacion_auditoria {
+  bitacora_auditoria
+  dispositivo
+  operacion_sync
+  recepcion_sync
+}
+
+TableGroup 6_Registros_de_campo {
+  aplicacion_fitosanitaria
+  cosecha
+  etapa_declarada
+  lectura_trampa
+  visita
+  visita_lote
+}
+
+TableGroup 7_MTD_y_concepto {
+  concepto_aptitud
+  indice_mtd
+  indice_mtd_lectura
+  periodo_trampeo
+}
+
+TableGroup 8_Fase2_hallazgos_BPA_produccion {
+  bpa_verificacion
+  criterio_bpa
+  estimacion_produccion
+  hallazgo
+  manejo_agronomico
+  plaga_enfermedad
+  programa_criterio_bpa
+  severidad
+  tipo_manejo
+}
+
+TableGroup 9_Archivos_planificacion_notificaciones {
+  archivo_adjunto
+  categoria_notificacion
+  evidencia
+  imagen_diseno
+  notificacion
+  perfil_usuario
+  planificacion
+  planificacion_lote
+  preferencia_notificacion
+  restablecimiento_clave
+}
+

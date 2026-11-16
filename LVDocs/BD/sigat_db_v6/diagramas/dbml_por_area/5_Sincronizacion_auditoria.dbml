@@ -1,0 +1,61 @@
+Project sigat { database_type: 'PostgreSQL' }
+
+Table bitacora_auditoria {
+  bita_id bigint [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  bita_t_registro timestamptz [not null, default: `now()`, note: 'Momento (reloj del servidor) en que se escribió la entrada de bitácora.']
+  bita_tabla varchar [not null, note: 'Nombre de la tabla afectada.']
+  bita_registro varchar [not null, note: 'Clave primaria del registro afectado, en texto.']
+  bita_accion varchar [not null, note: 'Operación auditada: INSERT, UPDATE, DELETE, ACCESO (lectura de datos personales) o SYNC.']
+  bita_version integer [note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  usua_id integer [note: 'Usuario que realizó/capturó la acción.']
+  disp_id uuid [note: 'Dispositivo que capturó el registro.']
+  bita_t_observacion timestamptz [note: 'Momento en que ocurrió lo observado (ADR-02); orden canónico del registro. Inmutable entre versiones (RN-009).']
+  bita_t_captura timestamptz [note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  bita_t_sincronizacion timestamptz [note: 'Momento en que el servidor recibió el dato (reloj del servidor, asignado por trigger; el cliente no lo controla).']
+  bita_detalle jsonb [note: 'Detalle del cambio en JSONB: fila completa (INSERT/DELETE) o pares antes/después (UPDATE). Nunca incluye contraseñas.']
+}
+
+Table dispositivo {
+  disp_id uuid [pk, not null, default: `gen_random_uuid()`, note: 'Dispositivo que capturó el registro.']
+  disp_nombre varchar [note: 'Nombre descriptivo del dispositivo (opcional).']
+  disp_plataforma varchar [not null, default: `'otro'::character varying`, note: 'android, ios u otro.']
+  disp_version_app varchar [note: 'Versión de la aplicación instalada.']
+  disp_registrado_en timestamptz [not null, default: `now()`, note: 'Momento en que el dispositivo se registró por primera vez.']
+  disp_ultima_sync timestamptz [note: 'Último momento en que el dispositivo sincronizó.']
+  disp_activo boolean [not null, default: `true`, note: 'Falso = dispositivo dado de baja; sus operaciones nuevas se rechazan.']
+}
+
+Table operacion_sync {
+  oper_id bigint [pk, not null, increment, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  disp_id uuid [not null, note: 'Dispositivo que capturó el registro.']
+  oper_cliente_id uuid [not null, note: 'Identificador de la operación generado en el dispositivo (UUID); junto con disp_id es la clave de idempotencia.']
+  usua_id integer [not null, note: 'Usuario que realizó/capturó la acción.']
+  oper_entidad varchar [not null, note: 'Tabla de dominio a la que se refiere la operación.']
+  oper_accion varchar [not null, note: 'crear, corregir (nueva versión) o anular.']
+  oper_registro_id uuid [not null, note: 'Identificador lógico del registro afectado.']
+  oper_version integer [not null, default: `1`, note: 'Número de versión del registro: 1 = alta; n+1 = corrección. Append-only (ADR-03).']
+  oper_hash_contenido character(64) [not null, note: 'SHA-256 hex del contenido canónico. Mismo (disp_id, oper_cliente_id) con hash distinto = conflicto (RN-010).']
+  oper_clasificacion sigat.d_clasificacion_operacion [not null, note: 'Clasificación del servidor (ADR-04): alta_nueva, alta_retroactiva, correccion, revisar o rechazada.']
+  oper_motivo varchar [note: 'Motivo de la clasificación (obligatorio si revisar o rechazada).']
+  oper_t_captura timestamptz [not null, note: 'Momento en que el dato se guardó, según el reloj del dispositivo (no puede ser anterior a t_observacion).']
+  oper_t_recepcion timestamptz [not null, default: `now()`, note: 'Momento (servidor) en que se recibió por primera vez la operación.']
+  oper_deriva_reloj_seg integer [note: '[ud: s] Diferencia detectada entre el reloj del dispositivo y el del servidor (RDD-010); nulo si no se detectó.']
+  oper_resuelve_oper_id bigint [note: 'Referencia a operacion_sync(oper_id).']
+  oper_payload jsonb [note: 'Sobre de transporte recibido (JSONB). Obligatorio solo en operaciones revisar/rechazada; no se consulta relacionalmente.']
+  indexes {
+    (disp_id, oper_cliente_id) [unique]
+  }
+}
+
+Table recepcion_sync {
+  rece_id bigint [pk, not null, increment, note: 'Identificador del registro (clave primaria).']
+  oper_id bigint [not null, note: 'Operación de sincronización que creó el registro (idempotencia y trazabilidad).']
+  rece_t timestamptz [not null, default: `now()`, note: 'Momento (servidor) del reenvío.']
+  rece_hash character(64) [not null, note: 'SHA-256 del contenido recibido en el reenvío.']
+  rece_resultado varchar [not null, note: 'idempotente_repetida (mismo contenido) o conflicto_contenido (mismo identificador, contenido distinto).']
+}
+
+Ref: operacion_sync.disp_id > dispositivo.disp_id
+Ref: operacion_sync.oper_resuelve_oper_id > operacion_sync.oper_id
+Ref: recepcion_sync.oper_id > operacion_sync.oper_id
+Ref: bitacora_auditoria.disp_id > dispositivo.disp_id

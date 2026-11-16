@@ -83,6 +83,12 @@ afirmar «el código es un stub», no la regla.
   triggers/CHECKs de PostgreSQL o en docstrings (Sprints 3–5) — se conservan como
   skip **con motivo documentado**, nunca con asserts vacíos. Ver la sección
   «Reglas sin implementación (backlog de pruebas)» de arriba.
+- **Integración (PostGIS real)**: los 9 fallos de `tests/integracion/` eran expectativas
+  obsoletas tras la revisión 0008 (334c1fa): 7 aserciones esperaban `alembic head = 0007`
+  y la comparación de vistas esperaba solo las de la 0004. Actualizadas a 0008 y a
+  `VISTAS_0004 | VISTAS_0008`. Verificado localmente contra PostgreSQL/PostGIS real
+  (135 passed). Head sigue fijado a mano en estos tests: la próxima revisión (0009)
+  deberá actualizarlos otra vez.
 - **Limpieza de comentarios** (solo Python; `bd/` intacto por convención): se eliminaron
   los marcadores «PENDIENTE» del código (están en «Pendientes técnicos» de arriba) y la
   referencia colgante a `docs/07_prefijos.md`. Se conservaron deliberadamente los

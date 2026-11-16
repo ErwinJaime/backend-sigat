@@ -21457,7 +21457,7 @@
     },
     "/api/v1/yo/inicio": {
       "get": {
-        "description": "Fecha, «datos al» y avisos sin leer (ya funcionan).\n\nPENDIENTE: los bloques ``tecnico`` / ``productor`` / ``agronomo`` componen conteos de lotes,\nplanificación, revisiones y sincronización; vendrán cuando esos módulos estén implementados.\nMientras tanto van en ``null`` (nunca con valores inventados).",
+        "description": "Fecha, «datos al» y avisos sin leer.\n\nLos bloques ``tecnico`` / ``productor`` / ``agronomo`` van en ``null`` (nunca valores\ninventados) hasta que sus módulos estén implementados: ver CHANGELOG.md, «Pendientes\ntécnicos».",
         "operationId": "inicio_api_v1_yo_inicio_get",
         "parameters": [
           {

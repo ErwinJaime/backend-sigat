@@ -18,11 +18,6 @@ async def principal() -> None:
     configurar_logs(cfg)
     crear_motor(cfg)
     try:
-        # Pendiente: app procrastinate -> app.run_worker_async(concurrency=cfg.cola_concurrencia)
-        # Tareas: reprocesar_periodo -> sincronizacion.procesador.ProcesadorReproceso
-        #         generar_paquete_campo -> configuracion.servicio.ServicioPaqueteCampo.generar
-        #         verificar_archivo -> imagenes.servicio.ServicioArchivos
-        #         enviar_correo -> infra.correo.enviar
         raise NotImplementedError("Worker de la cola pendiente de implementar")
     finally:
         await cerrar_motor()

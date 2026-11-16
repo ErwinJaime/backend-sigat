@@ -1,4 +1,17 @@
-"""Reglas del módulo sincronizacion: pendientes de implementar (cada una cuenta para RNF-017)."""
+"""Reglas del módulo sincronizacion.
+
+Estado real del módulo: la capa Python es un esqueleto. ``ServicioSincronizacion.recibir`` /
+``.resolver`` / ``.pendientes``, ``RegistradorOperacionesEnLinea`` y ``ProcesadorReproceso``
+lanzan ``NoImplementado``; las garantías con las que el diseño cubre estas reglas viven en la BD
+(clave única ``operacion_sync (disp_id, oper_cliente_id)``, ``recepcion_sync`` append-only, CHECK
+``oper_hash_contenido``/``oper_motivo_requerido``; bd/sql/01_esquema_completo.sql) y el ordenado
+del encolado del reproceso está solo en los docstrings del servicio/procesador.
+
+No hay forma honesta de testearlas unitariamente hoy: una prueba con dobles de repo, puertos, cola
+o reloj no llegaría más allá del ``NoImplementado`` (la excepción se lanza antes de tocar ninguno)
+y no demostraría nada sobre la regla. Los siete stubs conservan ``@PENDIENTE`` hasta que exista la
+implementación Python (ver informe del trabajo).
+"""
 
 import pytest
 

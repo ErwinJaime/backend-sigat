@@ -26,7 +26,7 @@ VECTORES: list[dict[str, Any]] = [
                 "lect_justificacion": None,
             },
         },
-        "hash": "43a8396af58e26b1e8f5bd6bbad24f830ab04566cb03da4d7221d28a26849731",
+        "hash": "43a8396af58e26b1e8f5bd6bbad24f830ab04566cb03da4d7221d28a26849731",  # pragma: allowlist secret
     },
     {
         "nombre": "visita con varios lotes y nulos",
@@ -45,7 +45,7 @@ VECTORES: list[dict[str, Any]] = [
                 "visi_t_fin_obs": "2026-03-02T09:00:00.000Z",
             },
         },
-        "hash": "6f5dcb27b553cba96ebb9e737cbb97920f0aa407565fc55dc64d9a26ca70bb79",
+        "hash": "6f5dcb27b553cba96ebb9e737cbb97920f0aa407565fc55dc64d9a26ca70bb79",  # pragma: allowlist secret
     },
     {
         "nombre": "decimales, unicode y orden de claves",
@@ -68,7 +68,7 @@ VECTORES: list[dict[str, Any]] = [
             "accion": "crear",
             "entidad": "lectura_trampa",
         },
-        "hash": "ed5e8f45ca91fa5fda6a0b75bfa5b45e95994101d4652f049b0f6d0d9366fcab",
+        "hash": "ed5e8f45ca91fa5fda6a0b75bfa5b45e95994101d4652f049b0f6d0d9366fcab",  # pragma: allowlist secret
     },
     {
         "nombre": "corrección de versión 2",
@@ -88,7 +88,7 @@ VECTORES: list[dict[str, Any]] = [
                 "lect_motivo_correccion": "Se contaron de nuevo",
             },
         },
-        "hash": "21321e345e5614768d7e4c48c07eba2cbb1b3f186cf7bc112ac49c6bdf45b49a",
+        "hash": "21321e345e5614768d7e4c48c07eba2cbb1b3f186cf7bc112ac49c6bdf45b49a",  # pragma: allowlist secret
     },
     {
         "nombre": "anulación",
@@ -108,7 +108,7 @@ VECTORES: list[dict[str, Any]] = [
                 "lect_motivo_anulacion": "Trampa mal identificada",
             },
         },
-        "hash": "afada6776cce04197e4749d3a58b329ce223370bc3791ef4e332ccce9db7e40f",
+        "hash": "afada6776cce04197e4749d3a58b329ce223370bc3791ef4e332ccce9db7e40f",  # pragma: allowlist secret
     },
 ]
 

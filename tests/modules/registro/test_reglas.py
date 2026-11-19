@@ -6,10 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from sigat_api.compartido.contratos import (
-    OperacionCampo,
-    PertenenciaTrampa,
-)
+from sigat_api.compartido.contratos import OperacionCampo, PertenenciaTrampa
 from sigat_api.compartido.errores import Conflicto, NoImplementado
 from sigat_api.compartido.tipos import (
     AccionSync,

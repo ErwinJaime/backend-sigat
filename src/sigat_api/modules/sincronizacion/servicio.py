@@ -4,13 +4,7 @@ from uuid import UUID
 
 from sigat_api.compartido.contratos import OperacionCampo, ResultadoAplicacion
 from sigat_api.compartido.errores import NoImplementado, Prohibido
-from sigat_api.compartido.tipos import (
-    AccionSync,
-    Actor,
-    ClasificacionOperacion,
-    EntidadSync,
-    ResultadoSync,
-)
+from sigat_api.compartido.tipos import AccionSync, Actor, ClasificacionOperacion, EntidadSync, ResultadoSync
 from sigat_api.config import Configuracion
 from sigat_api.infra.reloj import Reloj
 from sigat_api.modules.sincronizacion import esquemas as e

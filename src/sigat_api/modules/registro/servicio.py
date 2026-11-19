@@ -6,15 +6,7 @@ from uuid import UUID
 from sigat_api.compartido.contratos import OperacionCampo, ResultadoAplicacion
 from sigat_api.compartido.errores import Conflicto, NoEncontrado, NoImplementado, ReglaNegocio
 from sigat_api.compartido.esquemas import Pagina
-from sigat_api.compartido.tipos import (
-    AccionSync,
-    Actor,
-    ClasificacionOperacion,
-    EntidadSync,
-    EstadoRevision,
-    Linaje,
-    RolCodigo,
-)
+from sigat_api.compartido.tipos import AccionSync, Actor, ClasificacionOperacion, EntidadSync, EstadoRevision
 from sigat_api.infra.reloj import Reloj
 from sigat_api.modules.registro import dominio
 from sigat_api.modules.registro import esquemas as e
@@ -121,7 +113,7 @@ class ServicioRegistro:
             "lect_t_observacion": op.t_observacion,
             "lect_t_captura": op.t_captura,
             "lect_deriva_reloj_seg": op.deriva_reloj_seg,
-            "lect_linaje": op.linaje or _linaje_de(actor),
+            "lect_linaje": op.linaje or dominio.linaje_de(actor),
         }
         if fila.get("ubic_id") is None:
             fila["ubic_id"] = pertenencia.ubic_id
@@ -278,7 +270,7 @@ def _pagina[T](
 
 def _solo_propias(actor: Actor) -> bool:
     """El técnico consulta su propio trabajo; los demás roles, lo de sus lotes visibles."""
-    return actor.rol == RolCodigo.TECNICO
+    return actor.rol.value == "TECNICO"
 
 
 def _validar_rango(desde: datetime | None, hasta: datetime | None) -> None:
@@ -521,7 +513,3 @@ def _instante(valor: object) -> datetime:
     if isinstance(valor, datetime):
         return valor
     return datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
-
-
-def _linaje_de(actor: Actor) -> Linaje:
-    return Linaje.AUTORREPORTE if actor.rol.value == "PRODUCTOR" else Linaje.INSPECCION_OFICIAL

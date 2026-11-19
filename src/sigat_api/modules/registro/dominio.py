@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from sigat_api.compartido.tipos import AccionSync, ClasificacionOperacion
+from sigat_api.compartido.tipos import AccionSync, Actor, ClasificacionOperacion, Linaje, RolCodigo
 
 
 class MotivoRechazo(StrEnum):
@@ -94,3 +94,7 @@ def orden_canonico(
 ) -> tuple[datetime, datetime, str]:
     """R-T1: t_observacion ascendente; desempata (t_captura, identificador). La llegada no participa."""
     return (t_observacion, t_captura, registro_id)
+
+
+def linaje_de(actor: Actor) -> Linaje:
+    return Linaje.AUTORREPORTE if actor.rol == RolCodigo.PRODUCTOR else Linaje.INSPECCION_OFICIAL

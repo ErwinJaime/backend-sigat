@@ -3,12 +3,16 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from sigat_api.compartido.errores import NoEncontrado, NoImplementado
+from sigat_api.compartido.errores import Conflicto, NoEncontrado, NoImplementado, ReglaNegocio
 from sigat_api.compartido.tipos import Actor
 from sigat_api.infra.cola.cola import Cola
 from sigat_api.modules.configuracion import esquemas as e
+from sigat_api.modules.configuracion.dominio import error_codigo_trampa
 from sigat_api.modules.configuracion.repositorio import RepositorioConfiguracion
+
+_TZ_COLOMBIA = ZoneInfo("America/Bogota")
 
 # Columnas auxiliares que trae la vista para saber por qué no se puede confirmar la posición.
 # No forman parte del contrato HTTP: se quitan antes de construir el esquema de trampa.
@@ -50,13 +54,17 @@ class ServicioLotes:
         self._cola = cola
 
     async def listar(self, actor: Actor, pred_id: int | None, incluir_indicadores: bool) -> list[e.Lote]:
-        """Técnico: solo los lotes de sus actividades vigentes (v_asignacion_lote_tecnico) — lo
-        resuelve fn_lotes_visibles. El estado de jornada (pendiente/en curso/visitado) NO viene del
-        servidor: lo deriva el móvil de su visita local (CONCORDANCIA §4.1).
+        """Lotes visibles para el actor. La visibilidad y la asignación las resuelve
+        ``fn_lotes_visibles`` (a través de ``fn_lote_app``): administrador todos; productor y
+        agrónomo/supervisor los de sus predios (``v_acceso_predio``); técnico los de sus
+        asignaciones vigentes. ``pred_id`` solo acota el resultado. Los lotes dados de baja no
+        aparecen (``v_lote_app``).
 
         ``incluir_indicadores`` es de la web (tarjetas del panel de administración). Los indicadores
-        se calculan con las visitas, el programa y los periodos de trampeo, que son de otro sprint;
-        mientras tanto el bloque va en ``null`` (lo admite el esquema) en vez de inventar cifras.
+        se calculan con las visitas, el programa y los periodos de trampeo, que son de otro sprint
+        (fuera del alcance del issue #6); mientras tanto el bloque va en ``null`` (lo admite el
+        esquema) en vez de inventar cifras. La BD aún no tiene vista ni función que calcule los
+        campos obligatorios de ``IndicadoresLote``: ver CHANGELOG.md, «Pendientes técnicos».
         """
         filas = await self._repo.lotes_visibles(actor.usua_id, pred_id)
         return [e.Lote(**fila) for fila in filas]
@@ -76,10 +84,56 @@ class ServicioLotes:
         raise NoImplementado("Alta de lote")
 
     async def actualizar(self, actor: Actor, lote_id: int, s: e.ActualizacionLote) -> e.LoteDetalle:
-        """Web ``updateLot``: el 'propietario' no se edita aquí (es el productor del predio)."""
-        raise NoImplementado("Actualizar lote")
+        """Actualiza solo los campos permitidos. El productor no se edita aquí (sale del predio).
+
+        La autoría queda en ``bitacora_auditoria`` (``trg_aud_lote`` + ``sigat.usuario_actual``).
+        ``lote_tecnico_actualizacion_id`` NO se llena: es FK a ``tecnico`` y los roles que editan
+        lotes (administrador, agrónomo/supervisor) no tienen fila ahí.
+        """
+        if not await self._repo.lote_visible(actor.usua_id, lote_id):
+            raise NoEncontrado("El lote no existe o no es visible para usted.", codigo="LOTE_NO_ENCONTRADO")
+        cambios = s.model_dump(exclude_unset=True)
+        if not cambios:
+            raise ReglaNegocio("Debe enviar al menos un campo para actualizar.", codigo="ACTUALIZACION_VACIA")
+
+        # Columnas NOT NULL: un null explícito no es "no cambiar", es un error.
+        for campo in ("lote_descripcion", "lote_area"):
+            if campo in cambios and cambios[campo] is None:
+                raise ReglaNegocio(f"{campo} no puede ser nulo.", codigo="CAMPO_OBLIGATORIO")
+
+        # Coherencia especie/variedad antes de llegar a la FK compuesta.
+        actual = None
+        if "lote_fecha_baja" in cambios or ("espc_id" in cambios) != ("vari_id" in cambios):
+            actual = await self._repo.lote(lote_id)  # v_lote_app; None si no existe o ya está de baja
+            if actual is None:
+                raise NoEncontrado(
+                    "El lote no existe o no es visible para usted.", codigo="LOTE_NO_ENCONTRADO"
+                )
+            espc = cambios.get("espc_id", actual["espc_id"])
+            vari = cambios.get("vari_id", actual["vari_id"])
+            if vari is not None and espc is None:
+                raise ReglaNegocio("No se puede asignar variedad sin especie.", codigo="VARIEDAD_SIN_ESPECIE")
+            if "espc_id" in cambios and espc != actual["espc_id"] and actual["vari_id"] is not None:
+                raise ReglaNegocio(
+                    "Al cambiar la especie debe enviar también vari_id (o null para limpiarla).",
+                    codigo="VARIEDAD_INCOHERENTE",
+                )
+
+        cambios["lote_fecha_actualizacion"] = datetime.now(_TZ_COLOMBIA).date()
+
+        await self._repo.actualizar_lote(lote_id, cambios)
+
+        fila = await self._repo.lote(lote_id)
+        if fila is None and actual is not None:
+            # Este PATCH dio de baja el lote: v_lote_app ya lo oculta. Se responde con la fila
+            # previa más los campos que acaban de cambiar.
+            fila = {**actual, **{k: v for k, v in cambios.items() if k in actual}}
+        if fila is None:
+            raise NoEncontrado("El lote no existe o no es visible para usted.", codigo="LOTE_NO_ENCONTRADO")
+        return e.LoteDetalle(**fila)
 
     async def geometrias(self, actor: Actor, lote_id: int) -> list[e.VersionGeometriaLote]:
+        """Versiones de la geometría del lote (ADR-06)."""
         raise NoImplementado("Versiones de geometría")
 
     async def nueva_geometria(
@@ -177,18 +231,136 @@ class ServicioTrampas:
         """Reglas: ``dominio.error_codigo_trampa`` (formato y paridad RN-005, mismos textos que
         ``sigat.fn_codigo_trampa_error``) -> 422 ``CODIGO_TRAMPA_INVALIDO``; código existente -> 409
         ``CODIGO_TRAMPA_DUPLICADO``; la ubicación debe caer en el lote (advertencia) y respetar la
-        distancia mínima RN-004 con las vigentes."""
-        raise NoImplementado("Alta de trampa")
+        distancia mínima RN-004 con las vigentes.
+
+        Que el punto caiga dentro del lote NO bloquea (RF-012): la respuesta lo informa en
+        ``dentro_del_lote``. La trampa nace activa y a nombre del técnico de la ubicación inicial.
+        """
+        u = s.ubicacion
+        pred_id = await self._predio_destino(actor, u)
+
+        tipo = await self._repo.tipo_trampa(s.tipt_id)
+        if tipo is None:
+            raise ReglaNegocio("El tipo de trampa no existe.", codigo="TIPO_TRAMPA_INVALIDO")
+        error = error_codigo_trampa(s.tram_codigo, tipo["tipt_paridad"])
+        if error is not None:
+            raise ReglaNegocio(error, codigo="CODIGO_TRAMPA_INVALIDO")
+        if await self._repo.existe_codigo_trampa(s.tram_codigo):
+            raise Conflicto(
+                f"Duplicidad de código de trampa: {s.tram_codigo}", codigo="CODIGO_TRAMPA_DUPLICADO"
+            )
+        await self._exigir_distancia_minima(pred_id, u, excluir_tram_id=None)
+
+        tram_id = await self._repo.insertar_trampa(
+            {
+                "tram_codigo": s.tram_codigo,
+                "tipt_id": s.tipt_id,
+                "atra_id": s.atra_id,
+                "tram_tecnico_registro_id": u.tecn_id,
+            },
+            {**u.model_dump(), "pred_id": pred_id},
+        )
+        return await self.obtener(actor, tram_id)
+
+    async def _predio_destino(self, actor: Actor, u: e.NuevaUbicacion) -> int:
+        """Predio del lote donde se instala la trampa.
+
+        Lote ajeno o inexistente -> 404 (no 403). El lote debe estar activo en la fecha de
+        instalación (tabla ``lote``: activo entre ``lote_fecha_registro`` y ``lote_fecha_baja``)
+        -> si no, 422 ``LOTE_INACTIVO``.
+        """
+        pred_id = (
+            await self._repo.predio_del_lote(u.lote_id)
+            if await self._repo.lote_visible(actor.usua_id, u.lote_id)
+            else None
+        )
+        if pred_id is None:
+            raise NoEncontrado("El lote no existe o no es visible para usted.", codigo="LOTE_NO_ENCONTRADO")
+        if not await self._repo.lote_activo_en(u.lote_id, u.ubic_fecha):
+            raise ReglaNegocio(
+                "El lote no está activo en la fecha de instalación: aún no estaba registrado o fue dado de baja.",
+                codigo="LOTE_INACTIVO",
+            )
+        return pred_id
+
+    async def _exigir_distancia_minima(
+        self, pred_id: int, u: e.NuevaUbicacion, excluir_tram_id: int | None
+    ) -> None:
+        """RN-004: ninguna trampa vigente del predio a menos de la distancia del programa vigente.
+
+        Sin programa vigente en la fecha de instalación no hay distancia que exigir: se omite la
+        comprobación en vez de inventar un valor (el rango 40-60 m lo fija cada programa).
+        """
+        distancia = await self._repo.distancia_minima_trampas(pred_id, u.ubic_fecha)
+        if distancia is None:
+            return
+        cercanas = await self._repo.trampas_cercanas(
+            pred_id, u.ubic_long, u.ubic_lat, u.ubic_fecha, distancia, excluir_tram_id
+        )
+        if cercanas:
+            raise ReglaNegocio(
+                f"La trampa queda a menos de {distancia} m de: {', '.join(cercanas)} (RN-004).",
+                codigo="DISTANCIA_MINIMA_TRAMPAS",
+            )
 
     async def actualizar(self, actor: Actor, tram_id: int, s: e.ActualizacionTrampa) -> e.Trampa:
-        raise NoImplementado("Actualizar trampa")
+        """Cambia atrayente y estado (activa/inactiva). Código y tipo no se editan (RN-005).
+
+        Cambiar ``esta_id`` exige ``tecn_id_estado``, el técnico responsable del cambio (contrato)
+        -> 422 ``TECNICO_ESTADO_REQUERIDO``. Cuando viene, también queda como técnico de la última
+        actualización; si no viene (p. ej. solo cambia el atrayente) ese campo queda nulo, porque el
+        contrato no trae otro técnico. Quién hizo el cambio lo guarda la bitácora (``fn_auditar``).
+        """
+        await self.obtener(actor, tram_id)
+        cambios = s.model_dump(exclude_unset=True)
+        if "atra_id" in cambios and cambios["atra_id"] is None:
+            raise ReglaNegocio("El atrayente es obligatorio.", codigo="ATRAYENTE_INVALIDO")
+        if "esta_id" in cambios:
+            if cambios["esta_id"] is None:
+                raise ReglaNegocio("El estado es obligatorio.", codigo="ESTADO_INVALIDO")
+            if cambios.get("tecn_id_estado") is None:
+                raise ReglaNegocio(
+                    "Indique el técnico que cambia el estado de la trampa (tecn_id_estado).",
+                    codigo="TECNICO_ESTADO_REQUERIDO",
+                )
+        if cambios:
+            await self._repo.actualizar_trampa(tram_id, cambios)
+        return await self.obtener(actor, tram_id)
 
     async def ubicaciones(self, actor: Actor, tram_id: int) -> list[e.UbicacionTrampa]:
-        raise NoImplementado("Ubicaciones")
+        """Historial de ubicaciones, de la más reciente a la más antigua (la vigente no tiene
+        ``ubic_fecha_fin``). Nunca se borra: reubicar cierra la anterior y agrega otra.
+
+        Solo se devuelven las ubicaciones en lotes visibles para el actor; si no queda ninguna -> 404
+        (no 403). No se usa ``trampa_por_id`` porque una trampa retirada (sin ubicación vigente)
+        también tiene historial.
+        """
+        filas = await self._repo.ubicaciones(tram_id, actor.usua_id)
+        if not filas:
+            raise NoEncontrado(
+                "La trampa no existe o no es visible para usted.", codigo="TRAMPA_NO_ENCONTRADA"
+            )
+        return [e.UbicacionTrampa(**fila) for fila in filas]
 
     async def reubicar(self, actor: Actor, tram_id: int, s: e.NuevaUbicacion) -> e.UbicacionTrampa:
-        """Sin solape (EXCLUDE ubicacion_trampa_sin_solape). Invalida el paquete de campo."""
-        raise NoImplementado("Reubicar trampa")
+        """Mueve la trampa a otro punto o lote: cierra la ubicación vigente con ``ubic_fecha_fin``
+        y registra la nueva. La BD hace cumplir vigencia y solape (EXCLUDE).
+
+        Invalida el paquete de campo (pendiente: no se llama a ``invalidar_paquetes``).
+        """
+        trampa = await self._repo.trampa_por_id(actor.usua_id, tram_id)
+        if trampa is None:
+            raise NoEncontrado(
+                "La trampa no existe o no es visible para usted.", codigo="TRAMPA_NO_ENCONTRADA"
+            )
+        pred_id = await self._predio_destino(actor, s)
+        await self._exigir_distancia_minima(pred_id, s, excluir_tram_id=tram_id)
+        ubic_id = await self._repo.reubicar(tram_id, {**s.model_dump(), "pred_id": pred_id})
+        filas = await self._repo.ubicaciones(tram_id, actor.usua_id)
+        for fila in filas:
+            if fila["ubic_id"] == ubic_id:
+                return e.UbicacionTrampa(**fila)
+        raise NoEncontrado("La trampa no existe o no es visible para usted.", codigo="TRAMPA_NO_ENCONTRADA")
 
 
 class ServicioPrograma:

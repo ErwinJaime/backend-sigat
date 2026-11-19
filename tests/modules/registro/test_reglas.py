@@ -4,7 +4,9 @@ Cada prueba cubre una regla de negocio y cuenta para la cobertura de RNF-017.
 Sin base de datos: repositorio y configuración se sustituyen por dobles.
 """
 
+from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -14,6 +16,7 @@ from sigat_api.compartido.contratos import (
     OperacionCampo,
     PertenenciaTrampa,
 )
+from sigat_api.compartido.errores import Conflicto, NoImplementado
 from sigat_api.compartido.tipos import (
     AccionSync,
     Actor,
@@ -21,6 +24,7 @@ from sigat_api.compartido.tipos import (
     Cliente,
     EntidadSync,
     Linaje,
+    ResultadoContraste,
     RolCodigo,
 )
 from sigat_api.modules.registro.dominio import (
@@ -31,7 +35,8 @@ from sigat_api.modules.registro.dominio import (
     decidir,
     orden_canonico,
 )
-from sigat_api.modules.registro.servicio import ServicioRegistro
+from sigat_api.modules.registro.mtd import EntradaMtd, calcular
+from sigat_api.modules.registro.servicio import ServicioRegistro, ServicioRevision
 from sigat_api.modules.registro.validador import ValidadorInvariantes
 
 AHORA = datetime(2026, 9, 15, 15, 0, tzinfo=UTC)
@@ -452,3 +457,169 @@ async def test_lectura_de_productor_es_autorreporte() -> None:
 
     assert resultado.clasificacion is ClasificacionOperacion.ALTA_NUEVA
     assert repo.lecturas[0]["lect_linaje"] is Linaje.AUTORREPORTE
+
+
+AGRONOMO = Actor(usua_id=3, rol=RolCodigo.AGRONOMO_SUPERVISOR, disp_id=None, cliente=Cliente.WEB)
+T_OBS = datetime(2026, 11, 10, 8, 10, tzinfo=UTC)
+VISI = UUID("0190f0d0-0000-7000-8000-000000000001")
+REGISTRO = UUID("0190f0d0-0000-7000-8000-0000000000aa")
+CLIENTE_ID = UUID("0190f0d0-0000-7000-8000-0000000000c1")
+DISP_ID = UUID("0190f0d0-0000-7000-8000-0000000000d2")
+
+
+def _el(dia: int, hora: int, minuto: int = 0) -> datetime:
+    return datetime(2026, 11, dia, hora, minuto, tzinfo=UTC)
+
+
+VERSIONES: list[dict[str, Any]] = [
+    {
+        "version": 1,
+        "anulada": False,
+        "motivo": None,
+        "autor": "Técnico Prueba",
+        "usua_id": 2,
+        "t_sincronizacion": _el(10, 12),
+        "t_observacion": T_OBS,
+        "valores": {"lect_especimenes": 9},
+    },
+    {
+        "version": 2,
+        "anulada": False,
+        "motivo": "Se contaron dos veces los mismos especímenes",
+        "autor": "Agrónomo Prueba",
+        "usua_id": 3,
+        "t_sincronizacion": _el(11, 10),
+        "t_observacion": T_OBS,
+        "valores": {"lect_especimenes": 7},
+    },
+]
+
+VISITA_ACEPTADA: dict[str, Any] = {
+    "visi_id": VISI,
+    "usua_id": 2,
+    "tecnico": "Técnico Prueba",
+    "pred_id": 1,
+    "pred_nombre": "Finca de demostración",
+    "ruta_id": None,
+    "t_inicio_obs": _el(10, 8),
+    "t_fin_obs": _el(10, 9),
+    "t_captura": _el(10, 9, 5),
+    "t_sincronizacion": _el(10, 12),
+    "deriva_reloj_seg": 4,
+    "estado_revision": "aceptado",
+    "motivo_revision": "Duplicada con la visita del martes",
+    "revisada_por": 3,
+    "revisada_en": AHORA,
+    "lote_ids": [1],
+    "lotes": ["01"],
+    "trampas_leidas": 1,
+    "lote_sin_asignacion": False,
+    "trampa_fuera_del_lote": False,
+}
+
+
+class _RepoVersiones:
+    """Solo lo que ``versiones_lectura`` necesita: visibilidad + versiones append-only."""
+
+    def __init__(self, versiones: list[dict[str, Any]]) -> None:
+        self.filas = deepcopy(versiones)
+        self.consultadas: list[tuple[str, UUID]] = []
+
+    async def lectura_visible(self, usua_id: int, solo_propias: bool, registro_id: UUID) -> bool:
+        return registro_id == REGISTRO
+
+    async def versiones(self, entidad: str, registro_id: UUID) -> list[dict[str, Any]]:
+        self.consultadas.append((entidad, registro_id))
+        return deepcopy(self.filas)
+
+
+class _RepoRevision:
+    """Una visita ya aceptada: ``aceptar`` debe dar 409 sin escribir."""
+
+    def __init__(self) -> None:
+        self.fila = deepcopy(VISITA_ACEPTADA)
+        self.llamadas: list[tuple[Any, ...]] = []
+
+    async def registro_revision(self, usua_id: int, visi_id: UUID, bloquear: bool = False):
+        self.llamadas.append(("registro_revision", visi_id, bloquear))
+        return deepcopy(self.fila) if visi_id == VISI else None
+
+    async def actualizar_revision_visita(
+        self, visi_id: UUID, estado: str, motivo: str | None, usua_id: int, en: datetime
+    ) -> None:
+        self.llamadas.append(("actualizar", visi_id, estado))
+
+    async def lecturas_de_visita(self, visi_id: UUID):
+        return []
+
+    async def versiones(self, entidad: str, registro_id: UUID):
+        return []
+
+
+class _ConfigFalsa:
+    """Puerto de configuración: registra si el validador llegó a consultarlo."""
+
+    def __init__(self, pertenencia: PertenenciaTrampa | None) -> None:
+        self.pertenencia = pertenencia
+        self.llamadas: list[tuple[int, datetime]] = []
+
+    async def pertenencia_trampa(self, tram_id: int, instante: datetime) -> PertenenciaTrampa | None:
+        self.llamadas.append((tram_id, instante))
+        return self.pertenencia
+
+    async def lote_activo_en(self, lote_id: int, instante: datetime) -> bool:
+        return True
+
+
+class _RelojFijo:
+    def ahora(self) -> datetime:
+        return AHORA
+
+
+def test_registro_09() -> None:
+    """MTD = M/(T×D) y T×D=0 da nulo.
+
+    La fórmula no está programada en ``mtd.calcular`` (esqueleto): tripwire. Cuando se
+    implemente, este test debe afirmar 12/(3×4)=1.0 y valor None con T×D=0.
+    """
+    entrada = EntradaMtd(moscas=12, trampas=3, dias_exposicion=Decimal("4"), umbral=Decimal("2.5"))
+
+    with pytest.raises(NoImplementado) as exc:
+        calcular(entrada)
+
+    assert exc.value.estado_http == 501
+    assert exc.value.codigo == "NO_IMPLEMENTADO"
+    assert "Cálculo del MTD" in exc.value.detalle
+
+
+@pytest.mark.regla
+def test_registro_10() -> None:
+    """sin umbral vigente a la fecha del periodo, el contraste es sin_umbral (concepto no_emitido).
+
+    El cálculo vive en ``mtd.calcular`` (esqueleto): tripwire + tokens del contrato de contraste.
+    """
+    sin_umbral = EntradaMtd(moscas=12, trampas=3, dias_exposicion=Decimal("4"), umbral=None)
+
+    with pytest.raises(NoImplementado) as exc:
+        calcular(sin_umbral)
+
+    assert "Cálculo del MTD" in exc.value.detalle
+    # tokens que la regla debe devolver (d_resultado_contraste, RF-024)
+    assert ResultadoContraste.SIN_UMBRAL.value == "sin_umbral"
+    assert ResultadoContraste.IGUAL_O_SUPERIOR_UMBRAL.value == "igual_o_superior_umbral"
+
+
+# ------------------------------------------------------------------ revisión
+@pytest.mark.regla
+async def test_registro_11() -> None:
+    """aceptar una revisión ya aceptada da 409 REVISION_YA_RESUELTA y no vuelve a escribir."""
+    repo = _RepoRevision()
+
+    with pytest.raises(Conflicto) as exc:
+        await ServicioRevision(repo, _RelojFijo()).aceptar(AGRONOMO, VISI)  # type: ignore[arg-type]
+
+    assert exc.value.estado_http == 409
+    assert exc.value.codigo == "REVISION_YA_RESUELTA"
+    assert "ya fue aceptada" in exc.value.detalle
+    assert ("registro_revision", VISI, True) in repo.llamadas  # bloqueó la fila antes de decidir
+    assert not [c for c in repo.llamadas if c[0] == "actualizar"]  # no sobrescribió la decisión

@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
-from sigat_api.compartido.errores import NoEncontrado, ReglaNegocio
+from sigat_api.compartido.errores import Conflicto, NoEncontrado, ReglaNegocio
 from sigat_api.compartido.tipos import Actor, Cliente, RolCodigo
 from sigat_api.modules.planificacion import esquemas as e
 from sigat_api.modules.planificacion import servicio as modulo_servicio
@@ -303,5 +303,69 @@ def test_otro_agronomo_del_predio_ve_la_planificacion_si_tiene_lotes_de_ese_pred
         assert (await svc.obtener(IRIS, con_lotes.plan_id)).plan_id == con_lotes.plan_id
         with pytest.raises(NoEncontrado):
             await svc.obtener(IRIS, sin_lotes.plan_id)
+
+    correr(h, bd, prueba)
+
+
+# ------------------------------------------------------------------ responder e informe
+def test_aceptar_y_rechazar_en_bd(bd: str, h: SimpleNamespace) -> None:
+    async def prueba(svc: ServicioPlanificacion, con: AsyncConnection) -> None:
+        await como(con, GLORIA)
+        p1 = await svc.crear(GLORIA, para_ana())
+        p2 = await svc.crear(GLORIA, para_ana())
+
+        await como(con, ANA)
+        aceptada = await svc.aceptar(ANA, p1.plan_id, e.Aceptacion(observacion="Aprobado por Ana"))
+        assert aceptada.plan_estado == "aceptada"
+        assert aceptada.plan_observacion_respuesta == "Aprobado por Ana"
+        assert aceptada.usua_id_respuesta == ANA.usua_id
+
+        with pytest.raises(Conflicto) as ya_resp:
+            await svc.aceptar(ANA, p1.plan_id, e.Aceptacion())
+        assert ya_resp.value.codigo == "PLANIFICACION_YA_RESPONDIDA"
+
+        rechazada = await svc.rechazar(ANA, p2.plan_id, e.Rechazo(motivo="No es posible fumigar esta semana"))
+        assert rechazada.plan_estado == "rechazada"
+        assert rechazada.plan_observacion_respuesta == "No es posible fumigar esta semana"
+        assert rechazada.usua_id_respuesta == ANA.usua_id
+
+    correr(h, bd, prueba)
+
+
+def test_actividad_tecnico_resultado_y_completar_en_bd(bd: str, h: SimpleNamespace) -> None:
+    async def prueba(svc: ServicioPlanificacion, con: AsyncConnection) -> None:
+        origen_id = await aceptada_por_ana(svc, con, lote_ids=[11, 12])
+
+        await como(con, GLORIA)
+        actividad = await svc.crear(
+            GLORIA,
+            e.NuevaPlanificacion(
+                usua_id_destinatario=TECNICO.usua_id,
+                plan_actividad="Inspección de lotes",
+                plan_fecha_inicio=date(2026, 11, 22),
+                plan_id_origen=origen_id,
+                lote_ids=[11, 12],
+            ),
+        )
+
+        await como(con, TECNICO)
+        p1 = await svc.registrar_resultado_lote(
+            TECNICO, actividad.plan_id, 11, e.EntradaResultadoLote(plal_estado="ejecutada")
+        )
+        assert p1.plan_estado == "pendiente"
+
+        p2 = await svc.registrar_resultado_lote(
+            TECNICO,
+            actividad.plan_id,
+            12,
+            e.EntradaResultadoLote(plal_estado="no_ejecutada", plal_observacion="Lote no accesible"),
+        )
+        assert p2.plan_estado == "completada"
+
+        await como(con, GLORIA)
+        informe = await svc.actividades_tecnico(GLORIA, None, None, None)
+        assert len(informe.items) >= 2
+        lotes_informe = {item.lote_id for item in informe.items if item.plan_id == actividad.plan_id}
+        assert lotes_informe == {11, 12}
 
     correr(h, bd, prueba)

@@ -7,7 +7,12 @@ from uuid import UUID
 
 import pytest
 
-from sigat_api.compartido.errores import NoEncontrado, Prohibido, ReglaNegocio
+from sigat_api.compartido.errores import (
+    Conflicto,
+    NoEncontrado,
+    Prohibido,
+    ReglaNegocio,
+)
 from sigat_api.compartido.tipos import Actor, Cliente, EstadoPlanificacion, RolCodigo
 from sigat_api.modules.planificacion import esquemas as e
 from sigat_api.modules.planificacion.cursor import TAMANO_PAGINA, CursorInvalido, codificar, decodificar
@@ -70,15 +75,42 @@ LOTES = [
 ]
 
 
+ACTIVIDAD = {
+    "plan_id": PLAN,
+    "plan_id_origen": ORIGEN,
+    "planificacion_aprobada": "Revisión de trampas",
+    "aprobada_el": datetime(2026, 11, 16, 16, 0, tzinfo=UTC),
+    "plan_actividad": "Leer trampas",
+    "plan_fecha_inicio": date(2026, 11, 20),
+    "plan_fecha_fin": None,
+    "actividad_estado": "pendiente",
+    "usua_id": 3,
+    "tecnico": "Tomás Técnico",
+    "lote_id": 1,
+    "lote_codigo": "L01",
+    "pred_id": 1,
+    "resultado": "pendiente",
+    "justificacion": None,
+    "resuelta_en": None,
+    "visi_id": None,
+    "evidencias": 0,
+}
+
+
 class RepoFalso:
     def __init__(self) -> None:
         self.filas: dict[UUID, dict[str, Any]] = {PLAN: deepcopy(FILA), ORIGEN: deepcopy(ORIGEN_ACEPTADO)}
         self.listado: list[dict[str, Any]] = [deepcopy(FILA)]
+        self.resultados: dict[UUID, list[dict[str, Any]]] = {PLAN: [deepcopy(RESULTADO)]}
+        self.listado_actividades: list[dict[str, Any]] = [deepcopy(ACTIVIDAD)]
         self.agronomo_predio = False
         self.destinatario_tipo: str | None = "productor"
         self.asignables = deepcopy(LOTES)
         self.insertadas: list[tuple[dict[str, Any], list[int]]] = []
         self.llamadas_listar: list[tuple[Any, ...]] = []
+        self.llamadas_actividades: list[tuple[Any, ...]] = []
+        self.respondidas: list[tuple[UUID, str, str | None]] = []
+        self.resultados_registrados: list[tuple[Any, ...]] = []
 
     async def listar(
         self, usua_id: int, bandeja: str, estado: str | None, despues_de: Any, limite: int
@@ -90,7 +122,53 @@ class RepoFalso:
         return self.filas.get(plan_id)
 
     async def resultados_lote(self, plan_id: UUID) -> list[dict[str, Any]]:
-        return [deepcopy(RESULTADO)]
+        return deepcopy(self.resultados.get(plan_id, [deepcopy(RESULTADO)]))
+
+    async def responder(self, plan_id: UUID, estado: str, observacion: str | None) -> int:
+        fila = self.filas.get(plan_id)
+        if fila is None or fila["plan_estado"] != "pendiente":
+            return 0
+        fila["plan_estado"] = estado
+        fila["plan_observacion_respuesta"] = observacion
+        fila["plan_respondida_en"] = datetime.now(UTC)
+        fila["usua_id_respuesta"] = fila["usua_id_destinatario"]
+        self.respondidas.append((plan_id, estado, observacion))
+        return 1
+
+    async def registrar_resultado_lote(
+        self,
+        plan_id: UUID,
+        lote_id: int,
+        estado: str,
+        observacion: str | None,
+        visi_id: UUID | None,
+        oper_id: int | None,
+    ) -> bool:
+        lista = self.resultados.setdefault(plan_id, [deepcopy(RESULTADO)])
+        res = next((r for r in lista if r["lote_id"] == lote_id), None)
+        if res is None or res["plal_estado"] != "pendiente":
+            return False
+        res["plal_estado"] = estado
+        res["plal_observacion"] = observacion
+        res["visi_id"] = visi_id
+        res["plal_resuelta_en"] = datetime.now(UTC)
+        self.resultados_registrados.append((plan_id, lote_id, estado, observacion, visi_id))
+        if all(r["plal_estado"] != "pendiente" for r in lista):
+            if plan_id in self.filas:
+                self.filas[plan_id]["plan_estado"] = "completada"
+            return True
+        return False
+
+    async def actividades_tecnico(
+        self,
+        usua_id_actor: int,
+        usua_id: int | None,
+        pred_id: int | None,
+        despues_de: Any,
+        limite: int,
+    ) -> list[dict[str, Any]]:
+        self.llamadas_actividades.append((usua_id_actor, usua_id, pred_id, despues_de, limite))
+        return self.listado_actividades
 
     async def agronomo_del_predio(self, usua_id: int, plan_id: UUID) -> bool:
         return self.agronomo_predio
@@ -511,3 +589,264 @@ async def test_crear_guarda_la_actividad_sin_espacios_sobrantes() -> None:
 
     assert repo.insertadas[0][0]["plan_actividad"] == "Revisión"
 
+
+# ------------------------------------------------------------------ responder (aceptar / rechazar)
+@pytest.mark.regla
+async def test_aceptar_actualiza_estado_y_guarda_observacion() -> None:
+    repo = RepoFalso()
+    detalle = await servicio(repo).aceptar(PRODUCTOR, PLAN, e.Aceptacion(observacion="Aprobado"))
+
+    assert detalle.plan_estado == "aceptada"
+    assert detalle.plan_observacion_respuesta == "Aprobado"
+    assert repo.filas[PLAN]["plan_estado"] == "aceptada"
+
+
+@pytest.mark.regla
+async def test_aceptar_observacion_vacia_guarda_none() -> None:
+    repo = RepoFalso()
+    detalle = await servicio(repo).aceptar(PRODUCTOR, PLAN, e.Aceptacion(observacion="   "))
+
+    assert detalle.plan_observacion_respuesta is None
+    assert repo.filas[PLAN]["plan_observacion_respuesta"] is None
+
+
+@pytest.mark.regla
+async def test_aceptar_por_otro_usuario_da_404() -> None:
+    with pytest.raises(NoEncontrado) as error:
+        await servicio(RepoFalso()).aceptar(AGRONOMO, PLAN, e.Aceptacion())
+
+    assert error.value.codigo == "PLANIFICACION_NO_ENCONTRADA"
+
+
+@pytest.mark.regla
+async def test_aceptar_actividad_de_tecnico_da_422() -> None:
+    repo = RepoFalso()
+    repo.filas[PLAN]["tipo"] = "tecnico"
+    repo.filas[PLAN]["usua_id_destinatario"] = TECNICO.usua_id
+
+    with pytest.raises(ReglaNegocio) as error:
+        await servicio(repo).aceptar(TECNICO, PLAN, e.Aceptacion())
+
+    assert error.value.codigo == "TECNICO_NO_RESPONDE"
+
+
+@pytest.mark.regla
+async def test_aceptar_planificacion_ya_respondida_da_409() -> None:
+    repo = RepoFalso()
+    repo.filas[PLAN]["plan_estado"] = "aceptada"
+
+    with pytest.raises(Conflicto) as error:
+        await servicio(repo).aceptar(PRODUCTOR, PLAN, e.Aceptacion())
+
+    assert error.value.codigo == "PLANIFICACION_YA_RESPONDIDA"
+
+
+@pytest.mark.regla
+async def test_rechazar_actualiza_estado_y_motivo() -> None:
+    repo = RepoFalso()
+    detalle = await servicio(repo).rechazar(
+        PRODUCTOR, PLAN, e.Rechazo(motivo="No es posible fumigar esta semana")
+    )
+
+    assert detalle.plan_estado == "rechazada"
+    assert detalle.plan_observacion_respuesta == "No es posible fumigar esta semana"
+    assert repo.filas[PLAN]["plan_estado"] == "rechazada"
+
+
+@pytest.mark.regla
+async def test_rechazar_por_otro_usuario_da_404() -> None:
+    with pytest.raises(NoEncontrado) as error:
+        await servicio(RepoFalso()).rechazar(
+            AGRONOMO, PLAN, e.Rechazo(motivo="No es posible fumigar esta semana")
+        )
+
+    assert error.value.codigo == "PLANIFICACION_NO_ENCONTRADA"
+
+
+@pytest.mark.regla
+async def test_rechazar_actividad_de_tecnico_da_422() -> None:
+    repo = RepoFalso()
+    repo.filas[PLAN]["tipo"] = "tecnico"
+    repo.filas[PLAN]["usua_id_destinatario"] = TECNICO.usua_id
+
+    with pytest.raises(ReglaNegocio) as error:
+        await servicio(repo).rechazar(TECNICO, PLAN, e.Rechazo(motivo="No es posible fumigar esta semana"))
+
+    assert error.value.codigo == "TECNICO_NO_RESPONDE"
+
+
+@pytest.mark.regla
+async def test_rechazar_planificacion_ya_respondida_da_409() -> None:
+    repo = RepoFalso()
+    repo.filas[PLAN]["plan_estado"] = "rechazada"
+
+    with pytest.raises(Conflicto) as error:
+        await servicio(repo).rechazar(PRODUCTOR, PLAN, e.Rechazo(motivo="No es posible fumigar esta semana"))
+
+    assert error.value.codigo == "PLANIFICACION_YA_RESPONDIDA"
+
+
+# ------------------------------------------------------------------ resultado en lote
+def repo_actividad_tecnico() -> RepoFalso:
+    repo = RepoFalso()
+    repo.filas[PLAN] = {
+        **deepcopy(FILA),
+        "tipo": "tecnico",
+        "usua_id_destinatario": TECNICO.usua_id,
+        "rol_destinatario": "Técnico",
+        "plan_id_origen": ORIGEN,
+        "lote_ids": [1, 2],
+        "lotes": ["L01", "L02"],
+    }
+    repo.resultados[PLAN] = [
+        deepcopy(RESULTADO),
+        {**deepcopy(RESULTADO), "lote_id": 2, "lote_codigo": "L02"},
+    ]
+    return repo
+
+
+@pytest.mark.regla
+async def test_resultado_lote_ejecutada_con_visita() -> None:
+    repo = repo_actividad_tecnico()
+    visita = UUID("00000000-0000-0000-0000-0000000000c1")
+    detalle = await servicio(repo).registrar_resultado_lote(
+        TECNICO, PLAN, 1, e.EntradaResultadoLote(plal_estado="ejecutada", visi_id=visita)
+    )
+
+    assert detalle.plan_estado == "pendiente"
+    res1 = next(r for r in detalle.resultados_lote if r.lote_id == 1)
+    assert res1.plal_estado == "ejecutada"
+    assert res1.visi_id == visita
+
+
+@pytest.mark.regla
+async def test_resultado_lote_no_ejecutada_sin_justificacion_da_422() -> None:
+    repo = repo_actividad_tecnico()
+    with pytest.raises(ReglaNegocio) as error:
+        await servicio(repo).registrar_resultado_lote(
+            TECNICO, PLAN, 1, e.EntradaResultadoLote(plal_estado="no_ejecutada", plal_observacion="  ")
+        )
+
+    assert error.value.codigo == "JUSTIFICACION_REQUERIDA"
+
+
+@pytest.mark.regla
+async def test_resultado_lote_no_ejecutada_con_visita_da_422() -> None:
+    repo = repo_actividad_tecnico()
+    with pytest.raises(ReglaNegocio) as error:
+        await servicio(repo).registrar_resultado_lote(
+            TECNICO,
+            PLAN,
+            1,
+            e.EntradaResultadoLote(
+                plal_estado="no_ejecutada",
+                plal_observacion="Lluvia",
+                visi_id=UUID("00000000-0000-0000-0000-0000000000c1"),
+            ),
+        )
+
+    assert error.value.codigo == "VISITA_NO_PERMITIDA"
+
+
+@pytest.mark.regla
+async def test_resultado_lote_ya_resuelto_da_409() -> None:
+    repo = repo_actividad_tecnico()
+    repo.resultados[PLAN][0]["plal_estado"] = "ejecutada"
+
+    with pytest.raises(Conflicto) as error:
+        await servicio(repo).registrar_resultado_lote(
+            TECNICO, PLAN, 1, e.EntradaResultadoLote(plal_estado="ejecutada")
+        )
+
+    assert error.value.codigo == "LOTE_YA_RESUELTO"
+
+
+@pytest.mark.regla
+async def test_resultado_lote_no_en_actividad_da_404() -> None:
+    repo = repo_actividad_tecnico()
+    with pytest.raises(NoEncontrado) as error:
+        await servicio(repo).registrar_resultado_lote(
+            TECNICO, PLAN, 99, e.EntradaResultadoLote(plal_estado="ejecutada")
+        )
+
+    assert error.value.codigo == "LOTE_NO_EN_ACTIVIDAD"
+
+
+@pytest.mark.regla
+async def test_resultado_lote_por_otro_usuario_da_404() -> None:
+    repo = repo_actividad_tecnico()
+    with pytest.raises(NoEncontrado) as error:
+        await servicio(repo).registrar_resultado_lote(
+            AGRONOMO, PLAN, 1, e.EntradaResultadoLote(plal_estado="ejecutada")
+        )
+
+    assert error.value.codigo == "PLANIFICACION_NO_ENCONTRADA"
+
+
+@pytest.mark.regla
+async def test_resultado_lote_planificacion_de_productor_da_422() -> None:
+    repo = RepoFalso()
+    with pytest.raises(ReglaNegocio) as error:
+        await servicio(repo).registrar_resultado_lote(
+            PRODUCTOR, PLAN, 1, e.EntradaResultadoLote(plal_estado="ejecutada")
+        )
+
+    assert error.value.codigo == "SOLO_ACTIVIDAD_TECNICO"
+
+
+@pytest.mark.regla
+async def test_resultado_lote_actividad_no_pendiente_da_409() -> None:
+    repo = repo_actividad_tecnico()
+    repo.filas[PLAN]["plan_estado"] = "completada"
+
+    with pytest.raises(Conflicto) as error:
+        await servicio(repo).registrar_resultado_lote(
+            TECNICO, PLAN, 1, e.EntradaResultadoLote(plal_estado="ejecutada")
+        )
+
+    assert error.value.codigo == "ACTIVIDAD_NO_PENDIENTE"
+
+
+@pytest.mark.regla
+async def test_ultimo_lote_resuelto_completa_la_actividad() -> None:
+    repo = repo_actividad_tecnico()
+    await servicio(repo).registrar_resultado_lote(
+        TECNICO, PLAN, 1, e.EntradaResultadoLote(plal_estado="ejecutada")
+    )
+    detalle = await servicio(repo).registrar_resultado_lote(
+        TECNICO,
+        PLAN,
+        2,
+        e.EntradaResultadoLote(plal_estado="no_ejecutada", plal_observacion="Acceso cerrado"),
+    )
+
+    assert detalle.plan_estado == "completada"
+    assert repo.filas[PLAN]["plan_estado"] == "completada"
+
+
+# ------------------------------------------------------------------ informe de actividades técnico
+@pytest.mark.regla
+async def test_actividades_tecnico_devuelve_pagina() -> None:
+    repo = RepoFalso()
+    pagina = await servicio(repo).actividades_tecnico(AGRONOMO, None, None, None)
+
+    assert len(pagina.items) == 1
+    assert pagina.items[0].plan_id == PLAN
+    assert pagina.siguiente is None
+
+
+@pytest.mark.regla
+async def test_actividades_tecnico_paginacion() -> None:
+    repo = RepoFalso()
+    repo.listado_actividades = [deepcopy(ACTIVIDAD) for _ in range(TAMANO_PAGINA + 1)]
+    pagina = await servicio(repo).actividades_tecnico(AGRONOMO, None, None, None)
+
+    assert len(pagina.items) == TAMANO_PAGINA
+    assert pagina.siguiente is not None
+
+
+@pytest.mark.regla
+async def test_actividades_tecnico_cursor_invalido_da_400() -> None:
+    repo = RepoFalso()
+    with pytest.raises(CursorInvalido):
+        await servicio(repo).actividades_tecnico(AGRONOMO, None, None, "invalido!!")

@@ -1,12 +1,18 @@
 """Casos de uso de planificación. ``aplicar_resultado_lote`` implementa
 ``sincronizacion.puertos.PuertoResultadoPlanificacion``."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
 from sigat_api.compartido.contratos import OperacionCampo, ResultadoAplicacion
-from sigat_api.compartido.errores import NoEncontrado, NoImplementado, Prohibido, ReglaNegocio
+from sigat_api.compartido.errores import (
+    Conflicto,
+    NoEncontrado,
+    NoImplementado,
+    Prohibido,
+    ReglaNegocio,
+)
 from sigat_api.compartido.esquemas import Pagina
 from sigat_api.compartido.tipos import Actor, EstadoPlanificacion, RolCodigo
 from sigat_api.modules.planificacion import esquemas as e
@@ -183,16 +189,97 @@ class ServicioPlanificacion:
     async def aceptar(self, actor: Actor, plan_id: UUID, s: e.Aceptacion) -> e.PlanificacionDetalle:
         """Solo el PRODUCTOR destinatario y solo si pendiente (409 ``PLANIFICACION_YA_RESPONDIDA``).
         Al técnico: 422 ``TECNICO_NO_RESPONDE``."""
-        raise NoImplementado("Aceptar planificación")
+        plan = await self._repo.obtener(plan_id)
+        if plan is None or actor.usua_id != plan["usua_id_destinatario"]:
+            raise NoEncontrado(
+                "La planificación no existe o no es visible para usted.", codigo="PLANIFICACION_NO_ENCONTRADA"
+            )
+        if plan["tipo"] == "tecnico":
+            raise ReglaNegocio(
+                "Las actividades dirigidas a un técnico no se responden por este endpoint.",
+                codigo="TECNICO_NO_RESPONDE",
+            )
+        if plan["plan_estado"] != EstadoPlanificacion.PENDIENTE:
+            raise Conflicto("La planificación ya fue respondida.", codigo="PLANIFICACION_YA_RESPONDIDA")
+
+        observacion = (s.observacion or "").strip() or None
+        actualizadas = await self._repo.responder(plan_id, EstadoPlanificacion.ACEPTADA.value, observacion)
+        if actualizadas == 0:
+            raise Conflicto("La planificación ya fue respondida.", codigo="PLANIFICACION_YA_RESPONDIDA")
+        return await self.obtener(actor, plan_id)
 
     async def rechazar(self, actor: Actor, plan_id: UUID, s: e.Rechazo) -> e.PlanificacionDetalle:
-        raise NoImplementado("Rechazar planificación")
+        """Solo el PRODUCTOR destinatario y solo si pendiente (409 ``PLANIFICACION_YA_RESPONDIDA``).
+        Al técnico: 422 ``TECNICO_NO_RESPONDE``."""
+        plan = await self._repo.obtener(plan_id)
+        if plan is None or actor.usua_id != plan["usua_id_destinatario"]:
+            raise NoEncontrado(
+                "La planificación no existe o no es visible para usted.", codigo="PLANIFICACION_NO_ENCONTRADA"
+            )
+        if plan["tipo"] == "tecnico":
+            raise ReglaNegocio(
+                "Las actividades dirigidas a un técnico no se responden por este endpoint.",
+                codigo="TECNICO_NO_RESPONDE",
+            )
+        if plan["plan_estado"] != EstadoPlanificacion.PENDIENTE:
+            raise Conflicto("La planificación ya fue respondida.", codigo="PLANIFICACION_YA_RESPONDIDA")
+
+        motivo = s.motivo.strip()
+        actualizadas = await self._repo.responder(plan_id, EstadoPlanificacion.RECHAZADA.value, motivo)
+        if actualizadas == 0:
+            raise Conflicto("La planificación ya fue respondida.", codigo="PLANIFICACION_YA_RESPONDIDA")
+        return await self.obtener(actor, plan_id)
 
     async def registrar_resultado_lote(
         self, actor: Actor, plan_id: UUID, lote_id: int, s: e.EntradaResultadoLote
     ) -> e.PlanificacionDetalle:
         """En línea. Solo el técnico destinatario, actividad pendiente, lote no resuelto antes."""
-        raise NoImplementado("Resultado de actividad en lote")
+        plan = await self._repo.obtener(plan_id)
+        if plan is None or actor.usua_id != plan["usua_id_destinatario"]:
+            raise NoEncontrado(
+                "La planificación no existe o no es visible para usted.", codigo="PLANIFICACION_NO_ENCONTRADA"
+            )
+        if plan["tipo"] != "tecnico":
+            raise ReglaNegocio(
+                "Solo las actividades asignadas a un técnico registran resultado por lote.",
+                codigo="SOLO_ACTIVIDAD_TECNICO",
+            )
+        if plan["plan_estado"] != EstadoPlanificacion.PENDIENTE:
+            raise Conflicto(
+                "La actividad ya está completada: sus resultados no se modifican.",
+                codigo="ACTIVIDAD_NO_PENDIENTE",
+            )
+        if lote_id not in plan["lote_ids"]:
+            raise NoEncontrado("El lote no pertenece a esta actividad.", codigo="LOTE_NO_EN_ACTIVIDAD")
+
+        resultados = await self._repo.resultados_lote(plan_id)
+        lote_res = next((r for r in resultados if r["lote_id"] == lote_id), None)
+        if lote_res is None:
+            raise NoEncontrado("El lote no pertenece a esta actividad.", codigo="LOTE_NO_EN_ACTIVIDAD")
+        if lote_res["plal_estado"] != "pendiente":
+            raise Conflicto("El lote ya tiene un resultado registrado.", codigo="LOTE_YA_RESUELTO")
+
+        observacion: str | None = None
+        if s.plal_estado == "no_ejecutada":
+            obs = (s.plal_observacion or "").strip()
+            if not obs:
+                raise ReglaNegocio(
+                    "Describa el motivo por el cual no se ejecutó la actividad en el lote.",
+                    codigo="JUSTIFICACION_REQUERIDA",
+                )
+            if s.visi_id is not None:
+                raise ReglaNegocio(
+                    "Una actividad no ejecutada no puede tener visita asociada.",
+                    codigo="VISITA_NO_PERMITIDA",
+                )
+            observacion = obs
+        else:
+            observacion = (s.plal_observacion or "").strip() or None
+
+        await self._repo.registrar_resultado_lote(
+            plan_id, lote_id, s.plal_estado, observacion, s.visi_id, oper_id=None
+        )
+        return await self.obtener(actor, plan_id)
 
     async def aplicar_resultado_lote(self, actor: Actor, op: OperacionCampo) -> ResultadoAplicacion:
         """Offline (entidad ``planificacion_lote``; registro_id = plal_sync_id; liga plal_oper_id)."""
@@ -209,7 +296,24 @@ class ServicioPlanificacion:
     async def actividades_tecnico(
         self, actor: Actor, usua_id: int | None, pred_id: int | None, cursor: str | None
     ) -> Pagina[e.ActividadTecnico]:
-        raise NoImplementado("Informe de actividades")
+        """Informe de actividades de técnicos (realizadas y no realizadas)."""
+        filas = await self._repo.actividades_tecnico(
+            actor.usua_id,
+            usua_id,
+            pred_id,
+            _clave_actividades(cursor),
+            TAMANO_PAGINA + 1,
+        )
+        items = [e.ActividadTecnico(**fila) for fila in filas[:TAMANO_PAGINA]]
+        siguiente = None
+        if len(filas) > TAMANO_PAGINA:
+            ultima = items[-1]
+            siguiente = codificar(
+                ultima.plan_fecha_inicio.isoformat(),
+                str(ultima.plan_id),
+                ultima.lote_id,
+            )
+        return Pagina[e.ActividadTecnico](items=items, siguiente=siguiente)
 
     async def contar_pendientes(self, actor: Actor) -> int:
         """Total de planificaciones en estado pendiente creadas por el agronomo"""
@@ -227,4 +331,14 @@ def _clave_listado(cursor: str | None) -> tuple[datetime, UUID] | None:
     try:
         return datetime.fromisoformat(str(clave[0])), UUID(str(clave[1]))
     except ValueError as exc:
+        raise CursorInvalido("Pida de nuevo la primera página sin cursor.") from exc
+
+
+def _clave_actividades(cursor: str | None) -> tuple[date, UUID, int] | None:
+    clave = decodificar(cursor, 3)
+    if clave is None:
+        return None
+    try:
+        return date.fromisoformat(str(clave[0])), UUID(str(clave[1])), int(clave[2])
+    except (ValueError, TypeError) as exc:
         raise CursorInvalido("Pida de nuevo la primera página sin cursor.") from exc

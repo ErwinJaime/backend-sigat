@@ -1,13 +1,11 @@
 """Acceso a datos de planificación. La BD valida autoría y roles: fijar sigat.usuario_actual."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
-
-from sigat_api.compartido.errores import NoImplementado
 
 # v_planificacion no trae tipo, arch_id_documento ni lote_ids; lote_codigo puede ser nulo y el contrato pide list[str].
 _SELECT_PLANIFICACION = """
@@ -173,9 +171,21 @@ RETURNING plan_id
                 )
         return UUID(str(plan_id))
 
-    async def responder(self, plan_id: UUID, estado: str, observacion: str | None) -> None:
+    async def responder(self, plan_id: UUID, estado: str, observacion: str | None) -> int:
         """UPDATE plan_estado/plan_observacion_respuesta; la BD fija usua_id_respuesta y respondida_en."""
-        raise NoImplementado("Respuesta")
+        res = await self._con.execute(
+            text(
+                """
+UPDATE sigat.planificacion
+   SET plan_estado = :estado,
+       plan_observacion_respuesta = :observacion
+ WHERE plan_id = :plan
+   AND plan_estado = 'pendiente'
+"""
+            ),
+            {"plan": plan_id, "estado": estado, "observacion": observacion},
+        )
+        return int(res.rowcount or 0)
 
     async def registrar_resultado_lote(
         self,
@@ -185,8 +195,61 @@ RETURNING plan_id
         observacion: str | None,
         visi_id: UUID | None,
         oper_id: int | None,
-    ) -> None:
-        raise NoImplementado("Resultado por lote")
+    ) -> bool:
+        """UPDATE planificacion_lote con plal_estado, plal_observacion, visi_id, oper_id.
+        Si ya no quedan lotes pendientes en la actividad, actualiza la actividad a 'completada'.
+        Devuelve True si la actividad quedó completada."""
+        async with self._con.begin_nested():
+            res = await self._con.execute(
+                text(
+                    """
+UPDATE sigat.planificacion_lote
+   SET plal_estado = :estado,
+       plal_observacion = :observacion,
+       visi_id = :visi_id,
+       plal_oper_id = :oper_id
+ WHERE plan_id = :plan
+   AND lote_id = :lote
+   AND plal_estado = 'pendiente'
+"""
+                ),
+                {
+                    "plan": plan_id,
+                    "lote": lote_id,
+                    "estado": estado,
+                    "observacion": observacion,
+                    "visi_id": visi_id,
+                    "oper_id": oper_id,
+                },
+            )
+            if res.rowcount == 0:
+                return False
+
+            quedan_pendientes = await self._con.scalar(
+                text(
+                    """
+SELECT EXISTS (
+       SELECT 1 FROM sigat.planificacion_lote
+        WHERE plan_id = :plan AND plal_estado = 'pendiente'
+)
+"""
+                ),
+                {"plan": plan_id},
+            )
+            if not quedan_pendientes:
+                await self._con.execute(
+                    text(
+                        """
+UPDATE sigat.planificacion
+   SET plan_estado = 'completada'
+ WHERE plan_id = :plan
+   AND plan_estado = 'pendiente'
+"""
+                    ),
+                    {"plan": plan_id},
+                )
+                return True
+            return False
 
     async def destinatarios(
         self, tipo: str | None, usua_id_agronomo: int, usua_id: int | None = None
@@ -219,8 +282,43 @@ SELECT l.lote_id, l.lote_codigo, l.lote_descripcion, p.pred_id, p.pred_nombre
         )
         return [dict(f) for f in filas.mappings()]
 
-    async def actividades_tecnico(self, filtros: dict[str, Any], cursor: str | None) -> Any:
-        raise NoImplementado("Actividades de técnicos")
+    async def actividades_tecnico(
+        self,
+        usua_id_actor: int,
+        usua_id: int | None,
+        pred_id: int | None,
+        despues_de: tuple[date, UUID, int] | None,
+        limite: int,
+    ) -> list[dict[str, Any]]:
+        """Informe de actividades de técnicos usando fn_actividad_tecnico(:actor).
+        Orden: plan_fecha_inicio DESC, plan_id DESC, lote_id DESC."""
+        filas = await self._con.execute(
+            text(
+                """
+SELECT plan_id, plan_id_origen, planificacion_aprobada, aprobada_el,
+       plan_actividad, plan_fecha_inicio, plan_fecha_fin, actividad_estado,
+       usua_id, tecnico, lote_id, lote_codigo, pred_id,
+       resultado, justificacion, resuelta_en, visi_id, evidencias
+  FROM sigat.fn_actividad_tecnico(:actor)
+ WHERE (CAST(:usua AS integer) IS NULL OR usua_id = CAST(:usua AS integer))
+   AND (CAST(:predio AS integer) IS NULL OR pred_id = CAST(:predio AS integer))
+   AND (CAST(:inicio AS date) IS NULL
+        OR (plan_fecha_inicio, plan_id, lote_id) < (CAST(:inicio AS date), CAST(:plan AS uuid), CAST(:lote AS integer)))
+ ORDER BY plan_fecha_inicio DESC, plan_id DESC, lote_id DESC
+ LIMIT :limite
+"""
+            ),
+            {
+                "actor": usua_id_actor,
+                "usua": usua_id,
+                "predio": pred_id,
+                "inicio": despues_de[0] if despues_de else None,
+                "plan": despues_de[1] if despues_de else None,
+                "lote": despues_de[2] if despues_de else None,
+                "limite": limite,
+            },
+        )
+        return [dict(f) for f in filas.mappings()]
 
     async def contar_por_estado(self, usua_id_creador: int, estado: str) -> int:
         """Cuenta planificaciones creadas por el diagrama en un estado dado"""

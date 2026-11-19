@@ -1,5 +1,3 @@
-"""Reglas del módulo sincronización: recepción idempotente y respuesta por operación."""
-
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -30,8 +28,6 @@ USUA = 7
 
 
 class RepoFalso:
-    """Repositorio en memoria con SAVEPOINT real (snapshot) para probar la reclasificación."""
-
     def __init__(self, *, activo: bool = True) -> None:
         self.activo = activo
         self.ops: dict[int, dict[str, Any]] = {}
@@ -189,7 +185,6 @@ def _servicio(
 
 @pytest.mark.regla
 async def test_sincronizacion_01() -> None:
-    """R-T4 mismo cliente_id y mismo hash es idempotente_repetida sin duplicar."""
     svc, repo, registro = _servicio()
     op = _op()
 
@@ -206,7 +201,6 @@ async def test_sincronizacion_01() -> None:
 
 @pytest.mark.regla
 async def test_sincronizacion_02() -> None:
-    """mismo cliente_id con hash distinto es conflicto_contenido."""
     svc, repo, _ = _servicio()
     cliente_id = uuid4()
     op = _op(cliente_id=cliente_id, datos={"pred_id": 1})
@@ -224,7 +218,6 @@ async def test_sincronizacion_02() -> None:
 
 @pytest.mark.regla
 async def test_sincronizacion_03() -> None:
-    """lote parcialmente aceptado responde por operación."""
     registro = RegistroFalso(
         [
             ResultadoAplicacion(ClasificacionOperacion.RECHAZADA, motivo="sin permiso", codigo="SIN_PERMISO"),
@@ -245,7 +238,6 @@ async def test_sincronizacion_03() -> None:
 
 @pytest.mark.regla
 async def test_sincronizacion_04() -> None:
-    """revisar/rechazada tienen reintentable=false."""
     svc, _, _ = _servicio()
     con_deriva = _op(deriva=600)
     no_leida_sin_justificar = _op(
@@ -264,7 +256,6 @@ async def test_sincronizacion_04() -> None:
 
 @pytest.mark.regla
 async def test_sincronizacion_05() -> None:
-    """R-T6 deriva de reloj sin confirmación queda en revisar."""
     svc, repo, registro = _servicio()
     op = _op()
     lote = _lote(op, enviado_en=AHORA + timedelta(minutes=10))
@@ -283,7 +274,6 @@ async def test_sincronizacion_05() -> None:
 
 @pytest.mark.regla
 async def test_sincronizacion_06() -> None:
-    """disp_id distinto al del token rechaza el lote con 403."""
     svc, _, _ = _servicio()
 
     with pytest.raises(Prohibido) as distinto:
@@ -410,7 +400,6 @@ async def test_operaciones_devuelve_estado_y_datos() -> None:
 
 
 async def test_claves_del_servidor_en_los_datos_se_rechazan() -> None:
-    """El cliente no puede enviar ``usua_id``/``disp_id``/``oper_id`` ni ``*_t_sincronizacion``."""
     svc, repo, registro = _servicio()
     op = _op(datos={"pred_id": 1, "usua_id": 99, "visi_t_sincronizacion": AHORA.isoformat()})
 

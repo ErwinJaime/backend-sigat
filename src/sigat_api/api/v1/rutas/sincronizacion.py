@@ -1,5 +1,3 @@
-"""Sincronización del móvil (Arquitectura §7.1)."""
-
 from typing import Annotated
 
 from fastapi import APIRouter, Depends

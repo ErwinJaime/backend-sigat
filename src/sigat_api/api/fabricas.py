@@ -145,13 +145,10 @@ def servicio_paquete(con: ConexionDep) -> ServicioPaqueteCampo:
 
 # ---------------------------------------------------------------- registro, sincronización, planificación
 class _AdaptadorConfiguracionParaRegistro:
-    """Satisface ``registro.puertos.PuertoConfiguracion`` con el repositorio de configuración."""
-
     def __init__(self, repo: RepositorioConfiguracion) -> None:
         self._repo = repo
 
     async def pertenencia_trampa(self, tram_id: int, instante: datetime) -> PertenenciaTrampa | None:
-        """Ubicación de la trampa vigente en ``instante`` (ubicacion_trampa [ubic_fecha, ubic_fecha_fin))."""
         fila = await self._repo.pertenencia_trampa(tram_id, instante)
         if fila is None:
             return None
@@ -166,7 +163,6 @@ class _AdaptadorConfiguracionParaRegistro:
         )
 
     async def lote_activo_en(self, lote_id: int, instante: datetime) -> bool:
-        """lote_fecha_registro <= fecha < lote_fecha_baja (o sin baja)."""
         return await self._repo.lote_activo_en(lote_id, instante)
 
     async def lote_visible(self, usua_id: int, lote_id: int) -> bool:

@@ -1,8 +1,3 @@
-"""Contrato de la huella de contenido (R-T4, RN-010).
-
-Los vectores son compartidos con el móvil y deben ser idénticos byte a byte.
-"""
-
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
@@ -12,8 +7,6 @@ import pytest
 from sigat_api.modules.sincronizacion import esquemas as e
 from sigat_api.modules.sincronizacion import huella
 
-# Hashes esperados del contrato compartido con el móvil (R-T4, RN-010). No se
-# recalculan aquí: si el algoritmo cambia, esta prueba debe fallar.
 VECTORES: list[dict[str, Any]] = [
     {
         "nombre": "lectura simple",
@@ -130,25 +123,22 @@ NORMALIZACION: list[dict[str, str]] = [
 @pytest.mark.regla
 @pytest.mark.parametrize("vector", VECTORES, ids=lambda v: v["nombre"])
 def test_vector_de_huella(vector: dict[str, Any]) -> None:
-    """Mismo contenido canónico -> mismo hash, con el orden de claves de entrada irrelevante."""
     assert huella.calcular(vector["contenido"]) == vector["hash"]
 
 
 @pytest.mark.regla
 @pytest.mark.parametrize("vector", NORMALIZACION, ids=lambda v: v["entrada"])
 def test_normalizacion_del_instante(vector: dict[str, str]) -> None:
-    """El instante se canoniza a UTC con milisegundos y sufijo ``Z`` (Python y Dart coinciden)."""
     entrada = datetime.fromisoformat(vector["entrada"].replace("Z", "+00:00"))
     assert huella.instante_canonico(entrada) == vector["canonica"]
 
 
 def test_instante_sin_zona_se_asume_utc() -> None:
-    sin_zona = datetime.fromisoformat("2026-03-02T09:00:00")  # naive: el contrato asume UTC
+    sin_zona = datetime.fromisoformat("2026-03-02T09:00:00")
     assert huella.instante_canonico(sin_zona) == "2026-03-02T09:00:00.000Z"
 
 
 def test_la_zona_no_cambia_la_huella() -> None:
-    """El mismo instante con distinta zona produce el mismo hash (decisión del Sprint 2)."""
     bogota = timezone(timedelta(hours=-5))
     visita = {
         "entidad": "lectura_trampa",
@@ -165,7 +155,6 @@ def test_la_zona_no_cambia_la_huella() -> None:
 
 
 def test_contenido_canonico_excluye_los_campos_de_reenvio() -> None:
-    """``cliente_id``, ``t_captura`` y la deriva no entran en la huella."""
     base: dict[str, Any] = {
         "cliente_id": UUID("0190f5b0-0000-7000-8000-0000000000c1"),
         "entidad": "lectura_trampa",

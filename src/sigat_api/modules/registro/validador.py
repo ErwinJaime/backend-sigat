@@ -1,9 +1,3 @@
-"""VALIDADOR DE INVARIANTES (Arquitectura §6.3). Descarta lo mal formado ANTES de tocar el historico.
-
-Se valida en el cliente la FORMA y aquí, otra vez, el DOMINIO (§5.3): el dispositivo
-puede estar desactualizado respecto a la configuración vigente.
-"""
-
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -13,7 +7,6 @@ from sigat_api.modules.registro.dominio import MotivoRechazo
 from sigat_api.modules.registro.puertos import PuertoConfiguracion
 from sigat_api.modules.registro.repositorio import RepositorioRegistro
 
-# Margen para no rechazar un teléfono que va unos segundos adelantado.
 _TOLERANCIA_RELOJ = timedelta(minutes=5)
 
 _LINAJE_POR_ROL = {
@@ -32,17 +25,6 @@ class ValidadorInvariantes:
     async def validar(
         self, op: OperacionCampo, ahora_servidor: datetime, actor: Actor
     ) -> MotivoRechazo | None:
-        """Devuelve el primer motivo de rechazo o None.
-
-        Por entidad (mínimo):
-        * Todas: t_observacion <= t_captura <= ahora + tolerancia; linaje permitido para el rol
-          (TECNICO -> inspeccion_oficial, PRODUCTOR -> autorreporte); el lote es visible para el actor.
-        * lectura_trampa: la trampa pertenecía al lote en t_observacion; el lote estaba activo;
-          t_observacion dentro de un periodo de trampeo del lote; especímenes >= 0 y nulos si
-          lect_leida = false; justificación obligatoria si no se leyó; la visita existe
-          (o vino antes en el mismo lote de operaciones).
-        * aplicacion_fitosanitaria / cosecha / planificacion_lote: fuera del alcance del sprint 2.
-        """
         if op.entidad not in (EntidadSync.VISITA, EntidadSync.LECTURA_TRAMPA):
             return MotivoRechazo.VALOR_NO_VALIDO
 
@@ -59,7 +41,6 @@ class ValidadorInvariantes:
             return await self._validar_visita(op, actor)
         return await self._validar_lectura(op, actor)
 
-    # ------------------------------------------------------------------ visita
     async def _validar_visita(self, op: OperacionCampo, actor: Actor) -> MotivoRechazo | None:
         try:
             pred_id = int(op.datos["pred_id"])
@@ -74,7 +55,6 @@ class ValidadorInvariantes:
         if inicio > fin or fin > op.t_captura:
             return MotivoRechazo.VALOR_NO_VALIDO
         if op.version != 1:
-            # La visita no es versionada: se crea una vez y solo se revisa.
             return MotivoRechazo.VERSION_INVALIDA
 
         for lote_id in lotes:
@@ -86,7 +66,6 @@ class ValidadorInvariantes:
                 return MotivoRechazo.LOTE_INACTIVO
         return None
 
-    # ------------------------------------------------------------------ lectura
     async def _validar_lectura(self, op: OperacionCampo, actor: Actor) -> MotivoRechazo | None:
         datos = op.datos
         try:
@@ -100,7 +79,6 @@ class ValidadorInvariantes:
             return MotivoRechazo.VALOR_NO_VALIDO
 
         if not await self._repo.visita_existe(visi_id):
-            # Puede venir después en el mismo lote: se reenvía en orden.
             return MotivoRechazo.REFERENCIA_PENDIENTE
 
         pertenencia = await self._configuracion.pertenencia_trampa(tram_id, op.t_observacion)

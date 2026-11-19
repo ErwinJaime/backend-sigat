@@ -1,5 +1,3 @@
-"""Acceso a datos de sincronización."""
-
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -16,7 +14,6 @@ class RepositorioSincronizacion:
 
     @asynccontextmanager
     async def punto_de_guarda(self) -> AsyncIterator[None]:
-        """SAVEPOINT por operación: una que falla no tumba a las demás del lote (ADR-04)."""
         async with self._con.begin_nested():
             yield
 
@@ -59,7 +56,6 @@ class RepositorioSincronizacion:
         return UUID(str(nuevo))
 
     async def operacion_existente(self, disp_id: UUID, cliente_id: UUID) -> dict[str, Any] | None:
-        """Busca por la clave única (disp_id, oper_cliente_id)."""
         fila = (
             (
                 await self._con.execute(
@@ -80,7 +76,6 @@ SELECT oper_id, oper_entidad, oper_accion, oper_registro_id, oper_version,
         return dict(fila) if fila else None
 
     async def registrar_reenvio(self, oper_id: int, hash_hex: str, resultado: str) -> None:
-        """INSERT recepcion_sync (idempotente_repetida | conflicto_contenido)."""
         await self._con.execute(
             text(
                 """
@@ -92,7 +87,6 @@ VALUES (:oper_id, :hash, :resultado)
         )
 
     async def insertar_operacion(self, fila: dict[str, Any]) -> int:
-        """INSERT operacion_sync. ``oper_payload`` SOLO si la clasificación es revisar/rechazada."""
         payload = fila.get("payload")
         oper_id = await self._con.scalar(
             text(
@@ -129,7 +123,6 @@ RETURNING oper_id
         return int(oper_id)
 
     async def operaciones_de_usuario(self, usua_id: int) -> list[dict[str, Any]]:
-        """Operaciones recibidas del usuario, con su clasificación y motivo."""
         filas = await self._con.execute(
             text(
                 """

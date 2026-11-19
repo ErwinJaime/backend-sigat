@@ -60,14 +60,7 @@ class EstadoPrevio:
 def decidir(
     accion: AccionSync, version: int, t_observacion: datetime, previo: EstadoPrevio
 ) -> tuple[ClasificacionOperacion, MotivoRechazo | None]:
-    """Como :func:`clasificar`, pero devuelve también el motivo del rechazo.
-
-    Así ``ServicioRegistro`` responde al móvil con el texto y el código sin
-    volver a interpretar la clasificación.
-    """
     if accion == AccionSync.CREAR:
-        # Un alta sobre un id que ya existe no es idempotencia: hay que reenviarla
-        # como ``corregir`` con la versión siguiente (R-T3).
         if previo.version_vigente is not None:
             return ClasificacionOperacion.RECHAZADA, MotivoRechazo.VERSION_INVALIDA
         if previo.hay_solapamiento:
@@ -79,7 +72,6 @@ def decidir(
             return ClasificacionOperacion.ALTA_RETROACTIVA, None
         return ClasificacionOperacion.ALTA_NUEVA, None
 
-    # corregir / anular: solo sobre un registro existente y con la versión inmediatamente siguiente.
     if previo.version_vigente is None:
         return ClasificacionOperacion.RECHAZADA, MotivoRechazo.REGISTRO_INEXISTENTE
     if version != previo.version_vigente + 1:
@@ -94,17 +86,6 @@ def decidir(
 def clasificar(
     accion: AccionSync, version: int, t_observacion: datetime, previo: EstadoPrevio
 ) -> ClasificacionOperacion:
-    """Decide la clasificación de ADR-04 para una operación YA validada en forma y dominio.
-
-    Reglas (probadas en tests/modules/registro):
-    * R-T3: accion=corregir|anular y existe -> ``correccion`` si version == vigente + 1;
-      si no existe -> ``rechazada`` (REGISTRO_INEXISTENTE); si salta versiones -> ``rechazada``.
-    * ADR-02: en corrección, t_observacion != original -> ``rechazada`` (T_OBSERVACION_CAMBIADA).
-    * R-T5: hay_solapamiento -> ``revisar`` (no se elige ganador).
-    * R-T2: accion=crear y t_observacion < ultima_t_observacion_serie -> ``alta_retroactiva``.
-    * accion=crear en otro caso -> ``alta_nueva``.
-    La idempotencia (R-T4) y el conflicto de contenido se resuelven ANTES, en sincronización.
-    """
     return decidir(accion, version, t_observacion, previo)[0]
 
 

@@ -1,15 +1,3 @@
-"""Acceso a datos del núcleo de registro. SOLO INSERT en tablas versionadas (ADR-03).
-
-Visibilidad de las consultas (la decide SIEMPRE el servidor, RNF-015):
-* Una visita es visible si el actor es el técnico que la hizo (``solo_propias``) o, para los
-  demás roles, si alguno de sus lotes está en ``fn_lotes_visibles(:u)``. El técnico ve sus
-  visitas aunque la asignación del lote ya haya terminado: es su propio historial.
-* Una lectura es visible si su visita es visible.
-* La revisión del agrónomo se acota por predio (``v_acceso_predio``), igual que
-  ``contar_por_revisar`` y ``v_registro_campo``.
-Lo que no es visible se trata como inexistente (404, nunca 403) para no revelar datos ajenos.
-"""
-
 import json
 from datetime import date, datetime
 from typing import Any
@@ -21,8 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sigat_api.compartido.errores import NoImplementado
 from sigat_api.modules.registro.dominio import EstadoPrevio
 
-# Columnas que un cliente puede enviar en ``datos``; el resto lo pone el servidor.
-# Es una lista blanca: nunca se interpola una clave que venga del cuerpo.
 _COLUMNAS_LECTURA = frozenset(
     {
         "lect_registro_id",
@@ -47,7 +33,6 @@ _COLUMNAS_LECTURA = frozenset(
     }
 )
 
-# Columnas que el servidor agrega siempre a una lectura (no se aceptan del cliente).
 _COLUMNAS_LECTURA_SERVIDOR = {
     "usua_id",
     "disp_id",
@@ -255,7 +240,6 @@ class RepositorioRegistro:
         tram_id: int | None,
         t_observacion: datetime,
     ) -> EstadoPrevio:
-        """Versión vigente del registro lógico + última t_observacion de la serie + solapamiento (R-T5)."""
         if entidad == "visita":
             existe = await self._con.scalar(
                 text("SELECT 1 FROM sigat.visita WHERE visi_id = :v"), {"v": registro_id}
@@ -344,10 +328,7 @@ SELECT EXISTS (
             hay_solapamiento=solapamiento,
         )
 
-    # ------------------------------------------------------------------ escritura
     async def insertar_version(self, entidad: str, fila: dict[str, Any]) -> UUID:
-        """INSERT en la tabla de la entidad. La BD valida versión n+1 y t_observacion inmutable
-        (fn_registro_version_valida) y fija t_sincronizacion."""
         if entidad != "lectura_trampa":
             raise ValueError(f"Entidad versionada no soportada por el sprint: {entidad}")
         columnas = [c for c in fila if c in _COLUMNAS_LECTURA | _COLUMNAS_LECTURA_SERVIDOR]
@@ -355,8 +336,6 @@ SELECT EXISTS (
             raise ValueError("La lectura no trae columnas que se puedan insertar")
         lista = ", ".join(columnas)
         valores = ", ".join(f":{c}" for c in columnas)
-        # S608: los nombres de columna salen de la lista blanca de módulo (_COLUMNAS_*),
-        # nunca del cuerpo de la petición; los valores van siempre parametrizados.
         lect_id = await self._con.scalar(
             text(
                 f"INSERT INTO sigat.lectura_trampa ({lista}) VALUES ({valores}) RETURNING lect_id",  # noqa: S608
@@ -366,7 +345,6 @@ SELECT EXISTS (
         return UUID(str(lect_id))
 
     async def insertar_visita(self, fila: dict[str, Any], lote_ids: list[int]) -> None:
-        """visita + visita_lote (todas del mismo predio: FK compuesta)."""
         await self._con.execute(
             text(
                 """
@@ -410,7 +388,6 @@ UPDATE sigat.visita
         )
 
     async def lectura_vigente(self, registro_id: UUID) -> dict[str, Any] | None:
-        """Columnas de dominio de la última versión (para completar una corrección parcial)."""
         fila = (
             (
                 await self._con.execute(

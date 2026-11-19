@@ -1,5 +1,3 @@
-"""Receptor, clasificador y encolador (Arquitectura §6.3)."""
-
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -20,18 +18,11 @@ from sigat_api.modules.sincronizacion import huella
 from sigat_api.modules.sincronizacion.puertos import PuertoRegistro, PuertoResultadoPlanificacion
 from sigat_api.modules.sincronizacion.repositorio import RepositorioSincronizacion
 
-# Claves que el servidor asigna y que el cliente nunca debe enviar en ``datos``.
 _CLAVES_PROHIBIDAS = frozenset({"usua_id", "disp_id", "oper_id"})
 _SUFIJO_T_SINCRONIZACION = "_t_sincronizacion"
 
 
 class _Reclasificar(Exception):
-    """Señal interna: el dominio decidió una clasificación distinta de la esperada.
-
-    Sale del SAVEPOINT para deshacer la fila de ``operacion_sync`` y el registro de dominio
-    que se hubieran insertado con la clasificación provisional; se reinsertan con la final.
-    """
-
     def __init__(self, resultado: ResultadoAplicacion) -> None:
         super().__init__("reclasificar")
         self.resultado = resultado
@@ -53,21 +44,6 @@ class ServicioSincronizacion:
         self._cfg = cfg
 
     async def recibir(self, actor: Actor, lote: e.LoteSincronizacion) -> e.RespuestaLote:
-        """Procesa el lote EN ORDEN, cada operación en su propio SAVEPOINT (una que falla no
-        tumba a las demás; el resultado parcial es normal, ADR-04).
-
-        Por operación:
-        1. ``lote.disp_id`` == ``actor.disp_id`` y dispositivo activo; si no -> 403 para TODO el lote.
-        2. Recalcular ``hash_contenido`` (huella.py); si no coincide con el enviado -> rechazada
-           ``HUELLA_INVALIDA`` (el cliente serializó distinto: error de programación, no de usuario).
-        3. Idempotencia R-T4: ¿existe (disp_id, cliente_id)? mismo hash -> ``idempotente_repetida``
-           señalando la operación original (sin duplicarla); distinto -> ``conflicto_contenido``.
-           Ambos en recepcion_sync.
-        4. R-T6: |deriva| > SIGAT_SYNC_UMBRAL_DERIVA_RELOJ_SEG y no ``confirma_deriva_reloj`` -> ``revisar``.
-        5. Insertar operacion_sync y delegar en Registro (o Planificación para planificacion_lote).
-        6. Responder con ``reintentable=false`` salvo error técnico (excepción no de dominio).
-        Al final: actualizar disp_ultima_sync (disparador fn_dispositivo_sync) y devolver cursor.
-        """
         await self._verificar_dispositivo(actor, lote)
 
         ahora = self._reloj.ahora()
@@ -76,8 +52,6 @@ class ServicioSincronizacion:
             try:
                 resultados.append(await self._procesar(actor, lote, op, ahora))
             except Exception:
-                # Error técnico: el SAVEPOINT ya revirtió lo que se hubiera escrito. Se responde
-                # para esa operación y el cliente puede reintentar el resto del lote.
                 resultados.append(
                     self._resultado(
                         op,
@@ -96,11 +70,9 @@ class ServicioSincronizacion:
         )
 
     async def pendientes(self, actor: Actor) -> list[e.OperacionPendiente]:
-        """Operaciones recibidas del usuario, con su clasificación y motivo."""
         filas = await self._repo.operaciones_de_usuario(actor.usua_id)
         return [e.OperacionPendiente(**fila) for fila in filas]
 
-    # ---------------------------------------------------------------- operación
     async def _verificar_dispositivo(self, actor: Actor, lote: e.LoteSincronizacion) -> None:
         if actor.disp_id is None or lote.disp_id != actor.disp_id:
             raise Prohibido(
@@ -117,7 +89,6 @@ class ServicioSincronizacion:
     async def _procesar(
         self, actor: Actor, lote: e.LoteSincronizacion, op: e.OperacionSync, ahora: datetime
     ) -> e.ResultadoOperacion:
-        # 1. Huella: el cliente debe serializar exactamente el mismo contenido canónico.
         if huella.calcular(huella.contenido_canonico(op)) != op.hash_contenido:
             return self._resultado(
                 op,
@@ -127,7 +98,6 @@ class ServicioSincronizacion:
                 codigo="HUELLA_INVALIDA",
             )
 
-        # 2. Idempotencia R-T4: (disp_id, cliente_id) es la clave.
         existente = await self._repo.operacion_existente(lote.disp_id, op.cliente_id)
         if existente is not None:
             hash_original = str(existente["oper_hash_contenido"]).strip()
@@ -158,7 +128,6 @@ class ServicioSincronizacion:
 
         deriva = self._deriva(lote, op, ahora)
 
-        # 3. R-T6: una deriva grande sin confirmación explícita no se aplica; queda para revisión.
         if abs(deriva) > self._cfg.sync_umbral_deriva_reloj_seg and not op.confirma_deriva_reloj:
             return await self._persistir_decision(
                 actor,
@@ -170,7 +139,6 @@ class ServicioSincronizacion:
                 "DERIVA_RELOJ",
             )
 
-        # 4. Coherencia mínima que la BD también exige (se rechaza antes de tocar el histórico).
         problema = _validar_datos(op)
         if problema is not None:
             motivo, codigo = problema
@@ -184,15 +152,9 @@ class ServicioSincronizacion:
                 codigo,
             )
 
-        # 5. Insertar la operación y delegar el motor temporal.
         return await self._aplicar(actor, lote.disp_id, op, deriva)
 
     def _deriva(self, lote: e.LoteSincronizacion, op: e.OperacionSync, ahora: datetime) -> int:
-        """Deriva del reloj del dispositivo, en segundos (R-T6).
-
-        Se usa la medida que envía el móvil; si no viene, se compara la hora de envío del lote
-        con la del servidor. El signo no importa: se compara en valor absoluto.
-        """
         if op.deriva_reloj_seg is not None:
             return op.deriva_reloj_seg
         enviado = lote.enviado_en
@@ -210,7 +172,6 @@ class ServicioSincronizacion:
         motivo: str,
         codigo: str,
     ) -> e.ResultadoOperacion:
-        """Guarda una operación que no se aplica (revisar/rechazada), con su payload."""
         async with self._repo.punto_de_guarda():
             oper_id = await self._insertar(
                 actor, disp_id, op, clasificacion, motivo, deriva, _payload_persistido(op)
@@ -226,13 +187,6 @@ class ServicioSincronizacion:
     async def _aplicar(
         self, actor: Actor, disp_id: UUID, op: e.OperacionSync, deriva: int
     ) -> e.ResultadoOperacion:
-        """Inserta la operación con una clasificación provisional y deja que el dominio decida.
-
-        La tabla ``operacion_sync`` es append-only y el registro de dominio referencia
-        ``oper_id``; por eso, si el dominio devuelve otra clasificación, se revierte el SAVEPOINT
-        y se reinserta con la definitiva. Solo se vuelve a delegar cuando la clasificación final
-        implica escribir dominio (alta/corrección); ``revisar`` y ``rechazada`` solo guardan payload.
-        """
         esperada = (
             ClasificacionOperacion.ALTA_NUEVA
             if op.accion == AccionSync.CREAR
@@ -352,16 +306,10 @@ class ServicioSincronizacion:
 
 
 def _payload_persistido(op: e.OperacionSync) -> dict[str, Any]:
-    """Payload de una operación que no se aplica, para poder consultarla después."""
     return dict(op.datos)
 
 
 def _validar_datos(op: e.OperacionSync) -> tuple[str, str] | None:
-    """Validaciones que el servidor puede hacer sin consultar la BD.
-
-    Devuelve ``(motivo, codigo)`` para una rechazada persistida, o ``None`` si la operación
-    puede delegarse al motor temporal.
-    """
     for clave in op.datos:
         if clave in _CLAVES_PROHIBIDAS or clave.endswith(_SUFIJO_T_SINCRONIZACION):
             return (
@@ -372,8 +320,6 @@ def _validar_datos(op: e.OperacionSync) -> tuple[str, str] | None:
     if op.entidad != EntidadSync.LECTURA_TRAMPA:
         return None
 
-    # En una anulación el payload puede no repetir el conteo; la coherencia se exige cuando
-    # el cliente informa si la trampa fue leída.
     if "lect_leida" not in op.datos:
         return None
     if not isinstance(op.datos["lect_leida"], bool):

@@ -145,7 +145,6 @@ SELECT v.*,
         return int(valor) if valor is not None else None
 
     async def pertenencia_trampa(self, tram_id: int, instante: datetime) -> dict[str, Any] | None:
-        """Ubicación de la trampa en la fecha local del predio, no la de hoy."""
         fila = (
             (
                 await self._con.execute(
@@ -178,7 +177,6 @@ SELECT u.ubic_id,
         return dict(fila) if fila else None
 
     async def lote_activo_en(self, lote_id: int, instante: date | datetime) -> bool:
-        """``lote_fecha_registro <= fecha < lote_fecha_baja`` (o sin baja), en la fecha local."""
         return bool(
             await self._con.scalar(
                 text(

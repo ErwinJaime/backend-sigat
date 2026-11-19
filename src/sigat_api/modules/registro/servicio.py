@@ -1,5 +1,3 @@
-"""Casos de uso del núcleo de registro."""
-
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -30,8 +28,6 @@ LIMITE_ACTIVIDAD_RECIENTE = 10
 
 
 class ServicioRegistro:
-    """Escritura. Implementa estructuralmente ``sincronizacion.puertos.PuertoRegistro``."""
-
     def __init__(
         self,
         repo: RepositorioRegistro,
@@ -47,13 +43,6 @@ class ServicioRegistro:
         self._reloj = reloj
 
     async def aplicar(self, actor: Actor, op: OperacionCampo) -> ResultadoAplicacion:
-        """Aplica UNA operación dentro de la transacción del lote de sincronización.
-
-        1. ``validador.validar`` -> si hay motivo: ``rechazada`` (no toca el histórico).
-        2. ``repo.estado_previo`` + ``dominio.clasificar``.
-        3. ``revisar`` -> NO inserta en la tabla de dominio (queda solo en operacion_sync con payload).
-        4. alta/corrección -> ``repo.insertar_version`` (o ``insertar_visita``) ligado a ``op.oper_id``.
-        """
         ahora = self._reloj.ahora()
         motivo = await self._validador.validar(op, ahora, actor)
         if motivo is not None:
@@ -508,7 +497,6 @@ class ServicioConsultaRegistro:
             raise NoEncontrado("El lote no existe o no es visible para usted.", codigo="LOTE_NO_ENCONTRADO")
 
 
-# Columnas de dominio que el cliente puede aportar en una lectura (nombres de la BD).
 _DATOS_LECTURA = frozenset(
     {
         "visi_id",

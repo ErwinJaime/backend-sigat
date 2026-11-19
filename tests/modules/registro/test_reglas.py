@@ -1,9 +1,3 @@
-"""Reglas del núcleo de registro (motor temporal e invariantes).
-
-Cada prueba cubre una regla de negocio y cuenta para la cobertura de RNF-017.
-Sin base de datos: repositorio y configuración se sustituyen por dobles.
-"""
-
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -48,7 +42,6 @@ TRAMPA = 11
 VISITA = UUID("0190f5b0-0000-7000-8000-0000000000b1")
 
 
-# --------------------------------------------------------------------- dobles
 class RepoFalso:
     def __init__(self) -> None:
         self.lecturas: list[dict[str, Any]] = []
@@ -198,10 +191,8 @@ def _reemplazar(previo: EstadoPrevio, **cambios: Any) -> EstadoPrevio:
     return EstadoPrevio(**valores)
 
 
-# --------------------------------------------------------------------- R-T1…R-T5
 @pytest.mark.regla
 def test_registro_01() -> None:
-    """R-T1 orden canónico por t_observacion y desempate (t_captura, id)."""
     antes = AHORA - timedelta(hours=1)
     despues = AHORA + timedelta(minutes=1)
     tardia = orden_canonico(despues, AHORA, "a")
@@ -212,13 +203,11 @@ def test_registro_01() -> None:
     assert sorted(
         [tardia, temprana_con_captura_tardia, temprana_mismo_instante_b, temprana_mismo_instante_a]
     ) == [temprana_mismo_instante_a, temprana_mismo_instante_b, temprana_con_captura_tardia, tardia]
-    # La hora de llegada (t_sincronizacion) no participa: no aparece en la tupla canónica.
     assert len(tardia) == 3
 
 
 @pytest.mark.regla
 def test_registro_02() -> None:
-    """R-T2 alta con t_observacion anterior a la última es alta_retroactiva."""
     ultima = AHORA
     previo = _reemplazar(_previo(), ultima_t_observacion_serie=ultima)
 
@@ -234,11 +223,9 @@ def test_registro_02() -> None:
 
 @pytest.mark.regla
 def test_registro_03() -> None:
-    """R-T3 corrección crea versión n+1 y conserva la anterior."""
     previo = _reemplazar(_previo(), version_vigente=1, t_observacion_original=AHORA)
 
     assert clasificar(AccionSync.CORREGIR, 2, AHORA, previo) is ClasificacionOperacion.CORRECCION
-    # Saltarse una versión o corregir algo que no existe no se aplica.
     assert clasificar(AccionSync.CORREGIR, 3, AHORA, previo) is ClasificacionOperacion.RECHAZADA
     assert clasificar(AccionSync.CORREGIR, 2, AHORA, _previo()) is ClasificacionOperacion.RECHAZADA
     assert clasificar(AccionSync.ANULAR, 2, AHORA, previo) is ClasificacionOperacion.CORRECCION
@@ -246,7 +233,6 @@ def test_registro_03() -> None:
 
 @pytest.mark.regla
 def test_registro_04() -> None:
-    """ADR-02 corrección que cambia t_observacion se rechaza."""
     previo = _reemplazar(_previo(), version_vigente=1, t_observacion_original=AHORA)
 
     clasificacion, motivo = decidir(AccionSync.CORREGIR, 2, AHORA - timedelta(minutes=5), previo)
@@ -258,7 +244,6 @@ def test_registro_04() -> None:
 
 @pytest.mark.regla
 def test_registro_05() -> None:
-    """R-T5 solapamiento queda en revisar y no elige ganador."""
     previo = _reemplazar(_previo(), hay_solapamiento=True)
 
     assert clasificar(AccionSync.CREAR, 1, AHORA, previo) is ClasificacionOperacion.REVISAR
@@ -266,22 +251,18 @@ def test_registro_05() -> None:
     assert clasificar(AccionSync.CORREGIR, 2, AHORA, con_version) is ClasificacionOperacion.REVISAR
 
 
-# --------------------------------------------------------------------- validador
 @pytest.mark.regla
 async def test_registro_06() -> None:
-    """Fecha de observación futura (más allá de la tolerancia) se rechaza."""
     validador = ValidadorInvariantes(ConfiguracionFalsa(), RepoFalso())  # type: ignore[arg-type]
     futura = _operacion(t_observacion=AHORA + timedelta(hours=1))
 
     assert await validador.validar(futura, AHORA, _actor()) is MotivoRechazo.FECHA_FUTURA
-    # Cinco minutos de adelanto del teléfono siguen siendo aceptables.
     casi_ahora = _operacion(t_observacion=AHORA + timedelta(minutes=4))
     assert await validador.validar(casi_ahora, AHORA, _actor()) is None
 
 
 @pytest.mark.regla
 async def test_registro_07() -> None:
-    """Trampa que no pertenecía al lote en t_observacion se rechaza."""
     repo = RepoFalso()
     configuracion = ConfiguracionFalsa()
     validador = ValidadorInvariantes(configuracion, repo)  # type: ignore[arg-type]
@@ -292,7 +273,6 @@ async def test_registro_07() -> None:
     )
     assert await validador.validar(op, AHORA, _actor()) is MotivoRechazo.TRAMPA_NO_PERTENECE_AL_LOTE
 
-    # Ubicada en un lote activo, pero la visita no cubrió ese lote.
     configuracion.pertenencia = PertenenciaTrampa(
         tram_id=TRAMPA, ubic_id=9, lote_id=LOTE + 1, pred_id=PREDIO, lote_activo=True
     )
@@ -301,7 +281,6 @@ async def test_registro_07() -> None:
 
 @pytest.mark.regla
 async def test_registro_08() -> None:
-    """Lectura no leída exige justificación y especímenes nulos."""
     repo = RepoFalso()
     validador = ValidadorInvariantes(ConfiguracionFalsa(), repo)  # type: ignore[arg-type]
 
@@ -321,7 +300,6 @@ async def test_registro_08() -> None:
 
 
 async def test_visita_y_lectura_se_persisten_con_el_actor_del_token() -> None:
-    """El vertical del sprint: una visita y su lectura se insertan en la misma transacción."""
     servicio, repo, _ = _servicio()
     visita = _operacion(
         entidad=EntidadSync.VISITA,
@@ -349,12 +327,11 @@ async def test_visita_y_lectura_se_persisten_con_el_actor_del_token() -> None:
     fila_lectura = repo.lecturas[0]
     assert fila_lectura["lect_linaje"] is Linaje.INSPECCION_OFICIAL
     assert fila_lectura["lect_anulada"] is False
-    assert fila_lectura["ubic_id"] == 9  # la ubicación vigente la pone el servidor
+    assert fila_lectura["ubic_id"] == 9
     assert fila_lectura["lect_t_observacion"] == AHORA
 
 
 async def test_correccion_parcial_conserva_los_datos_de_la_version_anterior() -> None:
-    """Una corrección solo trae lo que cambió; el resto se hereda de la versión vigente."""
     repo = RepoFalso()
     repo.previo = EstadoPrevio(1, AHORA, AHORA, False)
     repo.anterior = {
@@ -382,7 +359,7 @@ async def test_correccion_parcial_conserva_los_datos_de_la_version_anterior() ->
     fila = repo.lecturas[0]
     assert fila["lect_version"] == 2
     assert fila["lect_especimenes"] == 6
-    assert fila["lect_observaciones"] == "Primera visita"  # heredado, no se pierde
+    assert fila["lect_observaciones"] == "Primera visita"
 
 
 async def test_anulacion_marca_la_lectura_sin_borrar_la_anterior() -> None:
@@ -411,7 +388,7 @@ async def test_anulacion_marca_la_lectura_sin_borrar_la_anterior() -> None:
     assert fila["lect_version"] == 2
     assert fila["lect_anulada"] is True
     assert fila["lect_motivo_anulacion"] == "Trampa mal identificada"
-    assert len(repo.lecturas) == 1  # la versión 1 nunca se toca: tabla append-only
+    assert len(repo.lecturas) == 1
 
 
 async def test_visita_en_lote_no_visible_se_rechaza_sin_tocar_el_historico() -> None:

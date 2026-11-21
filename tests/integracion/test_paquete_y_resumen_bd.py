@@ -53,7 +53,7 @@ INSERT INTO persona (pers_cc, pers_nombre, pers_apellido) VALUES
 
 INSERT INTO administrador (admi_id, pers_cc, cent_id) VALUES (1, 1001, 1);
 INSERT INTO tecnico (tecn_id, pers_cc, cent_id, tecn_codigo, admi_id, tecn_fecha_registro, esta_id)
-VALUES (1, 1002, 1, 'TEC-001', 1, CURRENT_DATE - 60, (SELECT esta_id FROM estado_registro WHERE esta_descripcion = 'activo'));
+VALUES (1, 1002, 1, '54518001', 1, CURRENT_DATE - 60, (SELECT esta_id FROM estado_registro WHERE esta_descripcion = 'activo'));
 
 INSERT INTO productor (pers_cc, prod_fecha_registro, prod_tecnico_registro_id, muni_id)
 VALUES (2001, CURRENT_DATE - 60, 1, 1);
@@ -160,6 +160,7 @@ DECLARE
   v_plan_tec uuid;
   v_disp uuid := gen_random_uuid();
   v_oper bigint;
+  v_cose_reg uuid := gen_random_uuid();
 BEGIN
   PERFORM set_config('sigat.usuario_actual', '4', true);
   INSERT INTO planificacion (usua_id_destinatario, usua_id_creador, plan_actividad,
@@ -179,15 +180,15 @@ BEGIN
   INSERT INTO planificacion_lote (plan_id, lote_id) VALUES (v_plan_tec, 1);
 
   -- Dispositivo y cosecha vigente para validar cosecha_esperada, rendimiento_estimado y rendimiento_real
-  INSERT INTO dispositivo (disp_id, usua_id, disp_identificador, disp_plataforma, disp_version_app)
-  VALUES (v_disp, 3, 'dev-prod-01', 'android', '1.0.0');
+  INSERT INTO dispositivo (disp_id, disp_plataforma)
+  VALUES (v_disp, 'android');
 
   INSERT INTO operacion_sync (
-      oper_cliente_id, disp_id, usua_id, oper_entidad, oper_accion,
-      oper_t_captura, oper_payload_hash, oper_clasificacion
+      disp_id, oper_cliente_id, usua_id, oper_entidad, oper_accion, oper_registro_id,
+      oper_version, oper_hash_contenido, oper_clasificacion, oper_t_captura
   ) VALUES (
-      gen_random_uuid(), v_disp, 3, 'cosecha', 'crear',
-      now(), repeat('a', 64), 'aceptada'
+      v_disp, gen_random_uuid(), 3, 'cosecha', 'crear', v_cose_reg,
+      1, repeat('a', 64), 'alta_nueva', now()
   ) RETURNING oper_id INTO v_oper;
 
   INSERT INTO cosecha (
@@ -195,7 +196,7 @@ BEGIN
       cose_fecha_real, cose_volumen_real, cose_volumen_uni_id, usua_id, disp_id, oper_id,
       cose_t_observacion, cose_t_captura
   ) VALUES (
-      gen_random_uuid(), 1, 1, CURRENT_DATE + 15, 500.000,
+      v_cose_reg, 1, 1, CURRENT_DATE + 15, 500.000,
       NULL, NULL, (SELECT unid_id FROM unidad_medida LIMIT 1), 3, v_disp, v_oper,
       now() - interval '1 hour', now()
   );

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
+import asyncpg
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -202,13 +203,29 @@ END $$;
 """
 
 
+def _dsn(h: SimpleNamespace, nombre: str) -> str:
+    return str(h.url(nombre)).replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
+def ejecutar(h: SimpleNamespace, nombre: str, sql: str) -> None:
+    async def _correr() -> None:
+        con = await asyncpg.connect(_dsn(h, nombre))
+        try:
+            async with con.transaction():
+                await con.execute(sql)
+        finally:
+            await con.close()
+
+    asyncio.run(_correr())
+
+
 @pytest.fixture(scope="module")
 def bd(h: SimpleNamespace) -> Iterator[str]:
     nombre = h.crear_bd()
     try:
         r = h.alembic(nombre, "upgrade", "head")
         assert r.returncode == 0, r.stderr
-        h.consulta(nombre, DATOS_SEMILLA)
+        ejecutar(h, nombre, DATOS_SEMILLA)
         yield nombre
     finally:
         h.borrar_bd(nombre)
@@ -219,7 +236,7 @@ def test_paquete_campo_resumen_lote_e_invalidacion_contra_postgres(h: SimpleName
     actor_agr = Actor(usua_id=4, rol=RolCodigo.AGRONOMO_SUPERVISOR, disp_id=None, cliente=Cliente.WEB)
 
     async def _correr() -> None:
-        motor = create_async_engine(h.url_base(bd))
+        motor = create_async_engine(h.url(bd))
         try:
             async with motor.begin() as con:
                 await con.execute(text("SELECT set_config('sigat.usuario_actual', '2', true)"))

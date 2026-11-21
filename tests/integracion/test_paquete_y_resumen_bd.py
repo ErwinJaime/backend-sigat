@@ -59,7 +59,7 @@ INSERT INTO productor (pers_cc, prod_fecha_registro, prod_tecnico_registro_id, m
 VALUES (2001, CURRENT_DATE - 60, 1, 1);
 
 INSERT INTO usuario (usua_id, pers_cc, usua_usuario, usua_requiere_reinicio, rol_id, esta_id)
-SELECT v.id, v.cc, v.usu, false, r.rol_id, er.esta_id
+SELECT v.id, v.cc, v.usu, true, r.rol_id, er.esta_id
   FROM (VALUES (1, 1001::bigint, 'admin.prueba', 'ADMINISTRADOR'),
                (2, 1002::bigint, 'tecnico.prueba', 'TECNICO'),
                (3, 2001::bigint, 'productor.prueba', 'PRODUCTOR'),
@@ -97,8 +97,8 @@ INSERT INTO lote_geometria (
     now() - interval '30 days', 'digitalizacion', 'Geometría inicial', 1
 );
 
-INSERT INTO reticula (reti_id, pred_id, reti_resolucion_m, reti_fecha_corte_imagen)
-VALUES (1, 1, 100, CURRENT_DATE - 30);
+INSERT INTO reticula (pred_id, reti_resolucion_m, reti_fecha_corte_imagen)
+VALUES (1, 100, CURRENT_DATE - 30);
 
 INSERT INTO reticula_celda (reti_id, retc_codigo, retc_geom)
 VALUES (
@@ -106,11 +106,13 @@ VALUES (
     ST_SetSRID(ST_GeomFromText('POLYGON((-72.655 7.375, -72.650 7.375, -72.650 7.380, -72.655 7.380, -72.655 7.375))'), 4326)
 );
 
+INSERT INTO vigilancia (vigi_id, vigi_descripcion, vigi_codigo) VALUES (1, 'Detección', 1);
+
 INSERT INTO programa_inspeccion (
-    prog_id, pred_id, prog_version, prog_vigente_desde, prog_periodo_lectura_dias,
+    pred_id, prog_version, prog_vigente_desde, prog_periodo_lectura_dias,
     prog_distancia_min_trampas_m, reti_id, prog_umbral_exportacion_mtd, prog_motivo_cambio, prog_creado_por
 ) VALUES (
-    1, 1, 1, CURRENT_DATE - 30, 7, 50, 1, 0.1000, 'Programa inicial', 1
+    1, 1, CURRENT_DATE - 30, 7, 50, 1, 0.1000, 'Programa inicial', 1
 );
 
 INSERT INTO trampa (
@@ -127,7 +129,7 @@ INSERT INTO ubicacion_trampa (
     ubic_id, tram_id, pred_id, lote_id, ubic_fecha, tecn_id, vigi_id, ubic_long, ubic_lat
 ) VALUES (
     1, 1, 1, 1, CURRENT_DATE - 30, 1,
-    (SELECT vigi_id FROM tipo_vigilancia LIMIT 1),
+    1,
     -72.65000, 7.38000
 );
 
@@ -135,7 +137,7 @@ INSERT INTO periodo_trampeo (
     peri_id, lote_id, vigi_id, prog_id, peri_inicio, peri_fin, peri_estado
 ) VALUES (
     1, 1,
-    (SELECT vigi_id FROM tipo_vigilancia LIMIT 1),
+    1,
     1, CURRENT_DATE - 7, CURRENT_DATE + 7, 'abierto'
 );
 
